@@ -1,0 +1,64 @@
+name: Sync upstream
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync upstream into fork
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Merge upstream and open PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+          SYNC_BRANCH: sync/upstream-main
+          UPSTREAM_REPO: https://github.com/Beingpax/VoiceInk.git
+          UPSTREAM_BRANCH: main
+        run: |
+          set -euo pipefail
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          git remote add upstream "$UPSTREAM_REPO" 2>/dev/null || git remote set-url upstream "$UPSTREAM_REPO"
+          git fetch upstream "$UPSTREAM_BRANCH"
+          git fetch origin "$BASE_BRANCH"
+
+          git checkout -B "$SYNC_BRANCH" "origin/$BASE_BRANCH"
+          git merge --no-edit "upstream/$UPSTREAM_BRANCH"
+
+          if git diff --quiet "origin/$BASE_BRANCH"..HEAD; then
+            echo "Fork is already up to date with upstream."
+            exit 0
+          fi
+
+          git push --force-with-lease origin "$SYNC_BRANCH"
+
+          if gh pr view "$SYNC_BRANCH" --json number >/dev/null 2>&1; then
+            gh pr edit "$SYNC_BRANCH" \
+              --title "Sync upstream VoiceInk" \
+              --body "Merge latest changes from Beingpax/VoiceInk into this fork."
+          else
+            gh pr create \
+              --base "$BASE_BRANCH" \
+              --head "$SYNC_BRANCH" \
+              --title "Sync upstream VoiceInk" \
+              --body "Merge latest changes from Beingpax/VoiceInk into this fork."
+          fi
