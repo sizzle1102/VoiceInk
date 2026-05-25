@@ -9,7 +9,7 @@ permissions:
 jobs:
   build:
     name: Build VoiceInk.app
-    runs-on: macos-15
+    runs-on: macos-26
 
     steps:
       - name: Checkout
