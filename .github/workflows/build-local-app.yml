@@ -13,7 +13,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Show Xcode version
         run: |
@@ -31,7 +31,7 @@ jobs:
             "$RUNNER_TEMP/VoiceInk.app.zip"
 
       - name: Upload app artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: VoiceInk-app
           path: ${{ runner.temp }}/VoiceInk.app.zip
