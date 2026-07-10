@@ -1,7 +1,14 @@
 name: Build local VoiceInk app
 
+run-name: Build local VoiceInk app ${{ inputs.request_id || github.run_number }}
+
 on:
   workflow_dispatch:
+    inputs:
+      request_id:
+        description: Unique id used by local automation to find this run
+        required: false
+        type: string
 
 permissions:
   contents: read

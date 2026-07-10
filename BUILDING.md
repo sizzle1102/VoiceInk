@@ -76,6 +76,64 @@ The `make local` command uses:
 
 Your normal `make all` / `make build` commands are completely unaffected.
 
+### Weekly Local Update, Sign, and Install
+
+For personal installs, keep the signing certificate local and let GitHub Actions
+only build the unsigned/ad-hoc artifact. The helper script below updates this
+fork from upstream, triggers `.github/workflows/build-local-app.yml`, downloads
+the artifact, signs it locally, and replaces `/Applications/VoiceInk.app`.
+
+One-time setup:
+
+1. Create a local Keychain code signing certificate, for example
+   `VoiceInk Local Code Signing`.
+2. Authenticate GitHub CLI:
+
+```bash
+gh auth login
+gh auth refresh -h github.com -s workflow
+```
+
+Alternatively, create a fine-grained GitHub token for your fork with Actions
+read/write access and store it in Keychain:
+
+```bash
+security add-generic-password \
+  -a "$USER" \
+  -s "VoiceInk GitHub Token" \
+  -w "YOUR_GITHUB_TOKEN" \
+  -U
+```
+
+Run the updater:
+
+```bash
+scripts/update-build-sign-install.sh
+```
+
+Useful overrides:
+
+```bash
+VOICEINK_SIGN_IDENTITY="Your Certificate Name" scripts/update-build-sign-install.sh
+scripts/update-build-sign-install.sh --skip-install
+scripts/update-build-sign-install.sh --dry-run
+```
+
+Install a weekly user LaunchAgent:
+
+```bash
+scripts/install-weekly-updater-launchagent.sh install
+```
+
+The LaunchAgent runs every 604800 seconds while your user session is active.
+Logs are written to `~/Library/Logs/VoiceInk/update-build-sign-install.*.log`.
+
+Remove it with:
+
+```bash
+scripts/install-weekly-updater-launchagent.sh uninstall
+```
+
 ---
 
 ## Manual Build Process (Alternative)

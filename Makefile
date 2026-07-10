@@ -4,7 +4,7 @@ WHISPER_CPP_DIR := $(DEPS_DIR)/whisper.cpp
 FRAMEWORK_PATH := $(WHISPER_CPP_DIR)/build-apple/whisper.xcframework
 LOCAL_DERIVED_DATA := $(CURDIR)/.local-build
 
-.PHONY: all clean whisper setup build local check healthcheck help dev run
+.PHONY: all clean whisper setup build local update-install install-weekly-updater uninstall-weekly-updater check healthcheck help dev run
 
 # Default target
 all: check build
@@ -93,6 +93,15 @@ run:
 		fi; \
 	fi
 
+update-install:
+	scripts/update-build-sign-install.sh
+
+install-weekly-updater:
+	scripts/install-weekly-updater-launchagent.sh install
+
+uninstall-weekly-updater:
+	scripts/install-weekly-updater-launchagent.sh uninstall
+
 # Cleanup
 clean:
 	@echo "Cleaning build artifacts..."
@@ -107,6 +116,9 @@ help:
 	@echo "  setup              Copy whisper XCFramework to VoiceInk project"
 	@echo "  build              Build the VoiceInk Xcode project"
 	@echo "  local              Build for local use (no Apple Developer certificate needed)"
+	@echo "  update-install     Update from upstream, build on GitHub, sign locally, install"
+	@echo "  install-weekly-updater    Install weekly local update/sign/install LaunchAgent"
+	@echo "  uninstall-weekly-updater  Remove weekly local update/sign/install LaunchAgent"
 	@echo "  run                Launch the built VoiceInk app"
 	@echo "  dev                Build and run the app (for development)"
 	@echo "  all                Run full build process (default)"
