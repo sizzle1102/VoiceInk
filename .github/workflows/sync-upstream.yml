@@ -27,6 +27,7 @@ jobs:
       - name: Merge upstream and open PR
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           BASE_BRANCH: ${{ github.event.repository.default_branch }}
           SYNC_BRANCH: sync/upstream-main
           UPSTREAM_REPO: https://github.com/Beingpax/VoiceInk.git
