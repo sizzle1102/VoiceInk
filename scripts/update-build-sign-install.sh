@@ -401,7 +401,10 @@ sign_app() {
 
   log "Signing app with identity: $SIGN_IDENTITY"
   xattr -cr "$app_path" 2>/dev/null || true
-  codesign --force --deep --options runtime --sign "$SIGN_IDENTITY" "$app_path"
+  # A local self-signed certificate has no Apple Team ID. Enabling the hardened
+  # runtime would turn on library validation and prevent VoiceInk from loading
+  # its bundled debug dylib, even though both are signed by this certificate.
+  codesign --force --deep --sign "$SIGN_IDENTITY" "$app_path"
   codesign --verify --deep --strict --verbose=2 "$app_path"
 }
 
