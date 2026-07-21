@@ -509,7 +509,7 @@ main() {
   workdir="$(mktemp -d "${TMPDIR:-/tmp}/voiceink-update.XXXXXX")"
 
   if [[ "$KEEP_WORKDIR" != "1" ]]; then
-    trap 'rm -rf "$workdir"' EXIT
+    trap "rm -rf -- $(printf '%q' "$workdir")" EXIT
   else
     log "Keeping workdir: $workdir"
   fi
