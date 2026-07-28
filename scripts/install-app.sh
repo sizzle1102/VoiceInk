@@ -62,6 +62,7 @@ install_latest_archive() {
   [[ -n "$GITHUB_API_TOKEN" ]] ||
     voiceink_die "GitHub token not found" || return 1
 
+  cd "$REPO_ROOT"
   repo="${VOICEINK_REPO:-$(voiceink_infer_github_repo "$REMOTE")}" ||
     voiceink_die "Could not infer GitHub repo from remote $REMOTE" ||
     return 1
