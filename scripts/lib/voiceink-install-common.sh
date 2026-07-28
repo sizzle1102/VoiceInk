@@ -484,6 +484,8 @@ voiceink_install_app() {
   local process_name="$4"
   local relaunch="$5"
   local backup_path=""
+  local backup_base=""
+  local backup_counter=0
   local install_failed=0
 
   [[ -d "$app_path" ]] ||
@@ -495,7 +497,12 @@ voiceink_install_app() {
   voiceink_quit_existing_app "$bundle_id" "$process_name" || return 1
 
   if [[ -e "$destination" ]]; then
-    backup_path="${destination}.backup.$(date '+%Y%m%d%H%M%S')"
+    backup_base="${destination}.backup.$(date '+%Y%m%d%H%M%S')"
+    backup_path="$backup_base"
+    while [[ -e "$backup_path" ]]; do
+      backup_counter=$((backup_counter + 1))
+      backup_path="$backup_base.$backup_counter"
+    done
     voiceink_log "Moving current app to $backup_path"
     mv "$destination" "$backup_path"
   fi

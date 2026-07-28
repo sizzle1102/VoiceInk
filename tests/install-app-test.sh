@@ -193,4 +193,34 @@ fi
   exit 1
 }
 
+voiceink_read_token() {
+  printf '%s' 'test-token'
+}
+
+voiceink_infer_github_repo() {
+  printf 'repo-cwd:%s\n' "$PWD" >> "$CALLS"
+  [[ "$PWD" == "$TEST_ROOT" ]] || return 1
+  printf '%s' 'sizzle1102/VoiceInk'
+}
+
+voiceink_find_latest_available_artifact() {
+  printf 'latest:42\n' >> "$CALLS"
+  printf '42\tlatest-sha\thttps://api.example/artifacts/42.zip\n'
+}
+
+voiceink_download_artifact_zip() {
+  printf 'download:%s\n' "$2" >> "$CALLS"
+  mkdir -p "$(dirname "$2")"
+  printf 'latest-artifact\n' > "$2"
+}
+
+(
+  cd /private/tmp
+  main
+)
+
+rg -Fx -- "repo-cwd:$TEST_ROOT" "$CALLS" >/dev/null
+rg -Fx -- 'latest:42' "$CALLS" >/dev/null
+[[ "$(cat "$VOICEINK_ARTIFACT_CACHE")" == "latest-artifact" ]]
+
 echo 'install app test passed'

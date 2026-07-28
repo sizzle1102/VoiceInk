@@ -95,4 +95,43 @@ if rg -q '^open:' "$CALLS"; then
   exit 1
 fi
 
+date() {
+  if [[ "$*" == "+%Y%m%d%H%M%S" ]]; then
+    printf '%s\n' '20260728120000'
+  else
+    command date "$@"
+  fi
+}
+
+collision_destination="$TEST_WORKDIR/Collision/VoiceInk.app"
+collision_backup="${collision_destination}.backup.20260728120000"
+mkdir -p "$collision_destination" "$collision_backup"
+printf 'old-collision\n' > "$collision_destination/old-version"
+printf 'existing-backup\n' > "$collision_backup/existing-backup"
+
+FAIL_VERIFY_DESTINATION="$collision_destination"
+export FAIL_VERIFY_DESTINATION
+
+if (
+  voiceink_install_app \
+    "$staged_app" \
+    "$collision_destination" \
+    "com.prakashjoshipax.VoiceInk" \
+    "VoiceInk" \
+    "0"
+); then
+  echo 'expected collision-case verification failure' >&2
+  exit 1
+fi
+
+[[ -f "$collision_destination/old-version" ]] || {
+  echo 'backup-name collision prevented restoration' >&2
+  exit 1
+}
+
+[[ -f "$collision_backup/existing-backup" ]] || {
+  echo 'installer modified a pre-existing timestamped backup' >&2
+  exit 1
+}
+
 echo 'voiceink install common test passed'
