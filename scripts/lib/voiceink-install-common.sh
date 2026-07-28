@@ -108,6 +108,166 @@ voiceink_github_download() {
     "$url"
 }
 
+voiceink_dispatch_workflow() {
+  local repo="$1"
+  local workflow="$2"
+  local ref="$3"
+  local request_id="$4"
+  local inputs_json="$5"
+  local output="$6"
+  local payload
+
+  payload="$(
+    REF="$ref" REQUEST_ID="$request_id" INPUTS_JSON="$inputs_json" \
+      python3 - <<'PY'
+import json
+import os
+
+inputs = json.loads(os.environ["INPUTS_JSON"])
+inputs["request_id"] = os.environ["REQUEST_ID"]
+print(json.dumps({
+    "ref": os.environ["REF"],
+    "inputs": inputs,
+}))
+PY
+  )"
+
+  voiceink_github_api POST \
+    "https://api.github.com/repos/$repo/actions/workflows/$workflow/dispatches" \
+    "$output" \
+    "$payload"
+}
+
+voiceink_find_workflow_run() {
+  local runs_file="$1"
+  local request_id="$2"
+
+  python3 - "$runs_file" "$request_id" <<'PY'
+import json
+import sys
+
+path, request_id = sys.argv[1:3]
+with open(path, "r", encoding="utf-8") as handle:
+    runs = json.load(handle).get("workflow_runs", [])
+
+for run in runs:
+    title = run.get("display_title") or ""
+    if request_id in title:
+        print(json.dumps({
+            "id": run["id"],
+            "head_sha": run.get("head_sha") or "",
+            "status": run.get("status") or "",
+            "conclusion": run.get("conclusion"),
+            "html_url": run.get("html_url") or "",
+        }))
+        break
+PY
+}
+
+voiceink_json_field() {
+  local json="$1"
+  local field="$2"
+
+  JSON_PAYLOAD="$json" JSON_FIELD="$field" python3 - <<'PY'
+import json
+import os
+
+payload = json.loads(os.environ["JSON_PAYLOAD"])
+value = payload.get(os.environ["JSON_FIELD"])
+print("" if value is None else value)
+PY
+}
+
+voiceink_wait_for_workflow_run() {
+  local repo="$1"
+  local workflow="$2"
+  local branch="$3"
+  local request_id="$4"
+  local expected_sha="$5"
+  local workdir="$6"
+  local timeout_seconds="${VOICEINK_RUN_TIMEOUT_SECONDS:-3600}"
+  local poll_seconds="${VOICEINK_POLL_INTERVAL_SECONDS:-15}"
+  local deadline=$(( $(date +%s) + timeout_seconds ))
+  local runs_file="$workdir/${workflow}.runs.json"
+  local run_file="$workdir/${workflow}.run.json"
+  local run_json=""
+  local run_id=""
+  local head_sha=""
+  local status=""
+  local conclusion=""
+  local html_url=""
+
+  mkdir -p "$workdir"
+  voiceink_log "Waiting for $workflow run $request_id"
+  while [[ $(date +%s) -lt $deadline ]]; do
+    voiceink_github_api GET \
+      "https://api.github.com/repos/$repo/actions/workflows/$workflow/runs?branch=$branch&event=workflow_dispatch&per_page=30" \
+      "$runs_file"
+
+    run_json="$(voiceink_find_workflow_run "$runs_file" "$request_id")"
+    if [[ -n "$run_json" ]]; then
+      run_id="$(voiceink_json_field "$run_json" id)"
+      head_sha="$(voiceink_json_field "$run_json" head_sha)"
+      html_url="$(voiceink_json_field "$run_json" html_url)"
+      if [[ -n "$expected_sha" && "$head_sha" != "$expected_sha" ]]; then
+        voiceink_die \
+          "$workflow run $run_id built $head_sha instead of $expected_sha"
+        return 1
+      fi
+      break
+    fi
+
+    sleep "$poll_seconds"
+  done
+
+  [[ -n "$run_id" ]] ||
+    voiceink_die "Timed out waiting for $workflow run to appear" || return 1
+  voiceink_log "Tracking workflow run: $html_url"
+
+  while [[ $(date +%s) -lt $deadline ]]; do
+    voiceink_github_api GET \
+      "https://api.github.com/repos/$repo/actions/runs/$run_id" \
+      "$run_file"
+    run_json="$(cat "$run_file")"
+    status="$(voiceink_json_field "$run_json" status)"
+    conclusion="$(voiceink_json_field "$run_json" conclusion)"
+
+    if [[ "$status" == "completed" ]]; then
+      [[ "$conclusion" == "success" ]] ||
+        voiceink_die \
+          "$workflow completed with conclusion: $conclusion ($html_url)" ||
+        return 1
+      printf '%s' "$run_id"
+      return 0
+    fi
+
+    voiceink_log "$workflow status: $status"
+    sleep "$poll_seconds"
+  done
+
+  voiceink_die "Timed out waiting for workflow completion: $html_url"
+}
+
+voiceink_remote_branch_sha() {
+  local repo="$1"
+  local branch="$2"
+  local workdir="$3"
+  local ref_file="$workdir/ref-${branch//\//-}.json"
+
+  mkdir -p "$workdir"
+  voiceink_github_api GET \
+    "https://api.github.com/repos/$repo/git/ref/heads/$branch" \
+    "$ref_file"
+  python3 - "$ref_file" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    payload = json.load(handle)
+print(payload["object"]["sha"])
+PY
+}
+
 voiceink_assert_signing_identity() {
   local sign_identity="$1"
 
@@ -213,6 +373,28 @@ voiceink_download_artifact_zip() {
   fi
 
   mv "$temporary_path" "$destination"
+}
+
+voiceink_download_run_artifact_zip() {
+  local repo="$1"
+  local run_id="$2"
+  local artifact_name="$3"
+  local destination="$4"
+  local workdir="$5"
+  local artifacts_file="$workdir/run-$run_id-artifacts.json"
+  local download_url
+
+  mkdir -p "$workdir"
+  voiceink_github_api GET \
+    "https://api.github.com/repos/$repo/actions/runs/$run_id/artifacts" \
+    "$artifacts_file"
+  download_url="$(
+    voiceink_artifact_download_url "$artifacts_file" "$artifact_name"
+  )"
+  [[ -n "$download_url" ]] ||
+    voiceink_die "Artifact not found: $artifact_name" || return 1
+
+  voiceink_download_artifact_zip "$download_url" "$destination"
 }
 
 voiceink_extract_artifact_zip() {
