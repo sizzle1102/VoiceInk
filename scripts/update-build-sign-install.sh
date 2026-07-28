@@ -2,16 +2,15 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck disable=SC1091
 source "$SCRIPT_DIR/lib/voiceink-install-common.sh"
 
 SCRIPT_NAME="$(basename "$0")"
-
-BRANCH="${VOICEINK_BRANCH:-main}"
 REMOTE="${VOICEINK_REMOTE:-origin}"
-UPSTREAM_REMOTE="${VOICEINK_UPSTREAM_REMOTE:-upstream}"
-UPSTREAM_BRANCH="${VOICEINK_UPSTREAM_BRANCH:-main}"
-WORKFLOW_FILE="${VOICEINK_WORKFLOW:-build-local-app.yml}"
+BRANCH="${VOICEINK_BRANCH:-main}"
+SYNC_WORKFLOW="${VOICEINK_SYNC_WORKFLOW:-sync-upstream.yml}"
+BUILD_WORKFLOW="${VOICEINK_WORKFLOW:-build-local-app.yml}"
 ARTIFACT_NAME="${VOICEINK_ARTIFACT_NAME:-VoiceInk-app}"
 SIGN_IDENTITY="${VOICEINK_SIGN_IDENTITY:-VoiceInk Local Code Signing}"
 APP_DESTINATION="${VOICEINK_APP_DESTINATION:-/Applications/VoiceInk.app}"
@@ -19,8 +18,6 @@ BUNDLE_ID="${VOICEINK_BUNDLE_ID:-com.prakashjoshipax.VoiceInk}"
 APP_PROCESS_NAME="${VOICEINK_PROCESS_NAME:-VoiceInk}"
 TOKEN_KEYCHAIN_SERVICE="${VOICEINK_TOKEN_KEYCHAIN_SERVICE:-VoiceInk GitHub Token}"
 TOKEN_KEYCHAIN_ACCOUNT="${VOICEINK_TOKEN_KEYCHAIN_ACCOUNT:-${USER:-default}}"
-RUN_TIMEOUT_SECONDS="${VOICEINK_RUN_TIMEOUT_SECONDS:-3600}"
-POLL_INTERVAL_SECONDS="${VOICEINK_POLL_INTERVAL_SECONDS:-15}"
 RELAUNCH="${VOICEINK_RELAUNCH:-1}"
 
 SKIP_SYNC=0
@@ -32,11 +29,12 @@ usage() {
   cat <<EOF
 Usage: $SCRIPT_NAME [options]
 
-Updates this fork from upstream, triggers the GitHub Actions local app build,
-downloads the app artifact, signs it with a local certificate, and installs it.
+Synchronizes this fork through GitHub Actions, automatically merges the sync
+pull request, builds the resulting $BRANCH, downloads that exact artifact,
+signs it with a local certificate, and installs it.
 
 Options:
-  --skip-sync      Do not fetch/merge/push upstream changes before building.
+  --skip-sync      Build the current remote branch without upstream sync.
   --skip-install   Download and sign the app, but do not replace /Applications.
   --keep-workdir   Keep the temporary download/signing directory.
   --dry-run        Validate local configuration and print the planned steps.
@@ -45,23 +43,23 @@ Options:
 
 Environment:
   VOICEINK_GITHUB_TOKEN or GITHUB_TOKEN
-      Token used for GitHub Actions dispatch/artifact APIs.
-
-  VOICEINK_TOKEN_KEYCHAIN_SERVICE
-      Keychain service name used when no token env var is set.
-      Default: VoiceInk GitHub Token
+      Token used for workflow dispatch and artifact APIs.
 
   VOICEINK_SIGN_IDENTITY
-      Local code signing identity name.
-      Default: VoiceInk Local Code Signing
+      Local code signing identity. Default: VoiceInk Local Code Signing
 
   VOICEINK_BRANCH
-      Fork branch to update/build.
-      Default: main
+      Remote fork branch to synchronize and build. Default: main
 EOF
 }
 
 parse_args() {
+  SKIP_SYNC=0
+  SKIP_INSTALL=0
+  KEEP_WORKDIR=0
+  DRY_RUN=0
+  RELAUNCH="${VOICEINK_RELAUNCH:-1}"
+
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --skip-sync)
@@ -93,324 +91,115 @@ parse_args() {
   done
 }
 
-log() {
-  printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
-}
-
-die() {
-  echo "error: $*" >&2
-  exit 1
-}
-
-require_command() {
-  command -v "$1" >/dev/null 2>&1 || die "Missing required command: $1"
-}
-
-repo_root() {
-  git rev-parse --show-toplevel 2>/dev/null
-}
-
-json_escape_payload() {
-  REF="$1" REQUEST_ID="$2" python3 - <<'PY'
-import json
-import os
-
-print(json.dumps({
-    "ref": os.environ["REF"],
-    "inputs": {"request_id": os.environ["REQUEST_ID"]},
-}))
-PY
-}
-
-github_api() {
-  local method="$1"
-  local url="$2"
-  local output="$3"
-  local data="${4:-}"
-
-  local args=(
-    --fail-with-body
-    --silent
-    --show-error
-    --location
-    --request "$method"
-    --header "Accept: application/vnd.github+json"
-    --header "Authorization: Bearer $GITHUB_API_TOKEN"
-    --header "X-GitHub-Api-Version: 2022-11-28"
-    --output "$output"
-  )
-
-  if [[ -n "$data" ]]; then
-    args+=(--header "Content-Type: application/json" --data "$data")
-  fi
-
-  curl "${args[@]}" "$url"
-}
-
-github_download() {
-  local url="$1"
-  local output="$2"
-
-  curl \
-    --fail-with-body \
-    --silent \
-    --show-error \
-    --location \
-    --header "Accept: application/vnd.github+json" \
-    --header "Authorization: Bearer $GITHUB_API_TOKEN" \
-    --header "X-GitHub-Api-Version: 2022-11-28" \
-    --output "$output" \
-    "$url"
-}
-
-read_token() {
-  if [[ -n "${VOICEINK_GITHUB_TOKEN:-}" ]]; then
-    printf '%s' "$VOICEINK_GITHUB_TOKEN"
-    return 0
-  fi
-
-  if [[ -n "${GITHUB_TOKEN:-}" ]]; then
-    printf '%s' "$GITHUB_TOKEN"
-    return 0
-  fi
-
-  if command -v gh >/dev/null 2>&1; then
-    local gh_token
-    gh_token="$(gh auth token 2>/dev/null || true)"
-    if [[ -n "$gh_token" ]]; then
-      printf '%s' "$gh_token"
-      return 0
-    fi
-  fi
-
-  security find-generic-password \
-    -a "$TOKEN_KEYCHAIN_ACCOUNT" \
-    -s "$TOKEN_KEYCHAIN_SERVICE" \
-    -w 2>/dev/null || true
-}
-
-infer_github_repo() {
-  local remote_url
-  remote_url="$(git config --get "remote.${REMOTE}.url")"
-
-  case "$remote_url" in
-    git@*:*)
-      printf '%s' "${remote_url#*:}" | sed 's/\.git$//'
-      ;;
-    https://github.com/*.git)
-      printf '%s' "${remote_url#https://github.com/}" | sed 's/\.git$//'
-      ;;
-    https://github.com/*)
-      printf '%s' "${remote_url#https://github.com/}"
-      ;;
-    *)
-      return 1
-      ;;
-  esac
-}
-
-assert_clean_tree() {
-  [[ -z "$(git status --porcelain)" ]] || die "Working tree has uncommitted changes. Commit/stash them before running this updater."
-}
-
-assert_signing_identity() {
-  if ! security find-identity -v -p codesigning | grep -F "\"$SIGN_IDENTITY\"" >/dev/null; then
-    cat >&2 <<EOF
-error: Code signing identity not found: $SIGN_IDENTITY
-
-Create a local Code Signing certificate in Keychain Access, or pass:
-  VOICEINK_SIGN_IDENTITY="Your Certificate Name" $SCRIPT_NAME
-
-Available identities:
-EOF
-    security find-identity -v -p codesigning >&2 || true
-    exit 1
-  fi
-}
-
-sync_from_upstream() {
-  log "Updating $BRANCH from $UPSTREAM_REMOTE/$UPSTREAM_BRANCH"
-
-  git fetch "$REMOTE" "$BRANCH"
-  git fetch "$UPSTREAM_REMOTE" "$UPSTREAM_BRANCH"
-  git checkout "$BRANCH"
-  git pull --ff-only "$REMOTE" "$BRANCH"
-
-  if ! git merge --no-edit "$UPSTREAM_REMOTE/$UPSTREAM_BRANCH"; then
-    git merge --abort >/dev/null 2>&1 || true
-    die "Upstream merge failed. Resolve manually, then rerun."
-  fi
-
-  local ahead_count
-  ahead_count="$(git rev-list --count "$REMOTE/$BRANCH"..HEAD)"
-  if [[ "$ahead_count" != "0" ]]; then
-    log "Pushing updated $BRANCH to $REMOTE"
-    git push "$REMOTE" "$BRANCH"
-  else
-    log "$BRANCH is already up to date"
-  fi
-}
-
-find_workflow_run() {
-  local runs_file="$1"
-  local head_sha="$2"
-  local request_id="$3"
-
-  python3 - "$runs_file" "$head_sha" "$request_id" <<'PY'
-import json
-import sys
-
-path, head_sha, request_id = sys.argv[1:4]
-with open(path, "r", encoding="utf-8") as handle:
-    runs = json.load(handle).get("workflow_runs", [])
-
-for run in runs:
-    title = run.get("display_title") or ""
-    if run.get("head_sha") == head_sha and request_id in title:
-        print(json.dumps({
-            "id": run["id"],
-            "status": run.get("status"),
-            "conclusion": run.get("conclusion"),
-            "html_url": run.get("html_url"),
-        }))
-        break
-PY
-}
-
-json_field() {
-  local json="$1"
-  local field="$2"
-
-  JSON_PAYLOAD="$json" JSON_FIELD="$field" python3 - <<'PY'
-import json
-import os
-
-payload = json.loads(os.environ["JSON_PAYLOAD"])
-value = payload.get(os.environ["JSON_FIELD"])
-print("" if value is None else value)
-PY
-}
-
-wait_for_workflow_run() {
-  local repo="$1"
-  local head_sha="$2"
-  local request_id="$3"
-  local workdir="$4"
-
-  local deadline=$(( $(date +%s) + RUN_TIMEOUT_SECONDS ))
-  local runs_file="$workdir/runs.json"
-  local run_file="$workdir/run.json"
-  local run_json=""
-  local run_id=""
-  local status=""
-  local conclusion=""
-  local html_url=""
-
-  log "Waiting for GitHub Actions run $request_id"
-  while [[ $(date +%s) -lt $deadline ]]; do
-    github_api GET \
-      "https://api.github.com/repos/$repo/actions/workflows/$WORKFLOW_FILE/runs?branch=$BRANCH&event=workflow_dispatch&per_page=20" \
-      "$runs_file"
-
-    run_json="$(find_workflow_run "$runs_file" "$head_sha" "$request_id")"
-    if [[ -n "$run_json" ]]; then
-      run_id="$(json_field "$run_json" id)"
-      html_url="$(json_field "$run_json" html_url)"
-      break
-    fi
-
-    sleep "$POLL_INTERVAL_SECONDS"
-  done
-
-  [[ -n "$run_id" ]] || die "Timed out waiting for the workflow run to appear"
-  log "Tracking workflow run: $html_url"
-
-  while [[ $(date +%s) -lt $deadline ]]; do
-    github_api GET \
-      "https://api.github.com/repos/$repo/actions/runs/$run_id" \
-      "$run_file"
-
-    run_json="$(cat "$run_file")"
-    status="$(json_field "$run_json" status)"
-    conclusion="$(json_field "$run_json" conclusion)"
-
-    if [[ "$status" == "completed" ]]; then
-      [[ "$conclusion" == "success" ]] || die "Workflow completed with conclusion: $conclusion ($html_url)"
-      printf '%s' "$run_id"
-      return 0
-    fi
-
-    log "Workflow status: $status"
-    sleep "$POLL_INTERVAL_SECONDS"
-  done
-
-  die "Timed out waiting for workflow completion: $html_url"
-}
-
-artifact_download_url() {
-  local artifacts_file="$1"
-  local artifact_name="$2"
-
-  python3 - "$artifacts_file" "$artifact_name" <<'PY'
-import json
-import sys
-
-path, artifact_name = sys.argv[1:3]
-with open(path, "r", encoding="utf-8") as handle:
-    artifacts = json.load(handle).get("artifacts", [])
-
-for artifact in artifacts:
-    if artifact.get("name") == artifact_name and not artifact.get("expired"):
-        print(artifact.get("archive_download_url", ""))
-        break
-PY
-}
-
-download_artifact() {
-  local repo="$1"
-  local run_id="$2"
-  local workdir="$3"
-
-  local artifacts_file="$workdir/artifacts.json"
-  local artifact_zip="$workdir/$ARTIFACT_NAME.zip"
-
-  github_api GET \
-    "https://api.github.com/repos/$repo/actions/runs/$run_id/artifacts" \
-    "$artifacts_file"
-
-  local download_url
-  download_url="$(artifact_download_url "$artifacts_file" "$ARTIFACT_NAME")"
-  [[ -n "$download_url" ]] || die "Artifact not found: $ARTIFACT_NAME"
-
-  log "Downloading artifact $ARTIFACT_NAME"
-  github_download "$download_url" "$artifact_zip"
-
-  voiceink_extract_artifact_zip "$artifact_zip" "$workdir" "$BUNDLE_ID"
-}
-
 sign_app() {
-  local app_path="$1"
-
-  voiceink_sign_app "$app_path" "$SIGN_IDENTITY"
-}
-
-quit_existing_app() {
-  voiceink_quit_existing_app "$BUNDLE_ID" "$APP_PROCESS_NAME"
+  voiceink_sign_app "$1" "$SIGN_IDENTITY"
 }
 
 install_app() {
-  local app_path="$1"
-
   voiceink_install_app \
-    "$app_path" \
+    "$1" \
     "$APP_DESTINATION" \
     "$BUNDLE_ID" \
     "$APP_PROCESS_NAME" \
     "$RELAUNCH"
 }
 
+run_remote_update() {
+  local repo="$1"
+  local workdir="$2"
+  local artifact_cache="$3"
+  local timestamp
+  local sync_request_id
+  local build_request_id
+  local sync_run_id=""
+  local main_sha
+  local build_run_id
+  local app_path
+
+  timestamp="$(date -u '+%Y%m%dT%H%M%SZ')"
+  sync_request_id="sync-install-$timestamp"
+  build_request_id="build-install-$timestamp"
+
+  if [[ "$SKIP_SYNC" != "1" ]]; then
+    voiceink_log "Dispatching upstream sync: $sync_request_id"
+    voiceink_dispatch_workflow \
+      "$repo" \
+      "$SYNC_WORKFLOW" \
+      "$BRANCH" \
+      "$sync_request_id" \
+      '{"auto_merge":true}' \
+      "$workdir/sync-dispatch.json"
+    sync_run_id="$(
+      voiceink_wait_for_workflow_run \
+        "$repo" \
+        "$SYNC_WORKFLOW" \
+        "$BRANCH" \
+        "$sync_request_id" \
+        "" \
+        "$workdir/sync"
+    )" || return 1
+    voiceink_log "Upstream sync completed in run $sync_run_id"
+  else
+    voiceink_log "Skipping upstream sync"
+  fi
+
+  main_sha="$(
+    voiceink_remote_branch_sha "$repo" "$BRANCH" "$workdir"
+  )" || return 1
+  [[ -n "$main_sha" ]] ||
+    voiceink_die "Remote $BRANCH has no head SHA" || return 1
+
+  voiceink_log "Dispatching build for $BRANCH at $main_sha"
+  voiceink_dispatch_workflow \
+    "$repo" \
+    "$BUILD_WORKFLOW" \
+    "$BRANCH" \
+    "$build_request_id" \
+    '{}' \
+    "$workdir/build-dispatch.json"
+  build_run_id="$(
+    voiceink_wait_for_workflow_run \
+      "$repo" \
+      "$BUILD_WORKFLOW" \
+      "$BRANCH" \
+      "$build_request_id" \
+      "$main_sha" \
+      "$workdir/build"
+  )" || return 1
+
+  voiceink_log "Downloading $ARTIFACT_NAME from run $build_run_id"
+  voiceink_download_run_artifact_zip \
+    "$repo" \
+    "$build_run_id" \
+    "$ARTIFACT_NAME" \
+    "$artifact_cache" \
+    "$workdir/download"
+
+  app_path="$(
+    voiceink_extract_artifact_zip \
+      "$artifact_cache" \
+      "$workdir/staging" \
+      "$BUNDLE_ID"
+  )" || return 1
+  sign_app "$app_path"
+
+  if [[ "$SKIP_INSTALL" == "1" ]]; then
+    KEEP_WORKDIR=1
+    voiceink_log "Signed app is ready at $app_path"
+    return 0
+  fi
+
+  install_app "$app_path"
+}
+
 main() {
   local parse_status=0
+  local root
+  local repo
+  local artifact_cache
+  local workdir
+  local status=0
+
   parse_args "$@" || parse_status=$?
   if [[ "$parse_status" == "2" ]]; then
     return 0
@@ -419,88 +208,67 @@ main() {
     return "$parse_status"
   fi
 
-  require_command curl
-  require_command unzip
-  require_command ditto
-  require_command codesign
-  require_command security
-  require_command git
-  require_command python3
-  require_command xattr
-  require_command osascript
-  require_command pgrep
-  require_command pkill
-  require_command find
-  require_command plutil
+  voiceink_require_command curl
+  voiceink_require_command unzip
+  voiceink_require_command ditto
+  voiceink_require_command codesign
+  voiceink_require_command security
+  voiceink_require_command git
+  voiceink_require_command python3
+  voiceink_require_command plutil
+  voiceink_require_command xattr
+  voiceink_require_command osascript
+  voiceink_require_command pgrep
+  voiceink_require_command pkill
+  voiceink_require_command find
 
-  local root
-  root="$(repo_root)" || die "Run this script inside the VoiceInk git repository"
+  root="$(voiceink_repo_root)" ||
+    voiceink_die "Run this script inside the VoiceInk repository" ||
+    return 1
   cd "$root"
 
-  local repo
-  repo="${VOICEINK_REPO:-$(infer_github_repo)}" || die "Could not infer GitHub repo from remote $REMOTE"
+  repo="${VOICEINK_REPO:-$(voiceink_infer_github_repo "$REMOTE")}" ||
+    voiceink_die "Could not infer GitHub repo from remote $REMOTE" ||
+    return 1
+  artifact_cache="${VOICEINK_ARTIFACT_CACHE:-$REPO_ROOT/artifacts/VoiceInk-app.zip}"
 
-  GITHUB_API_TOKEN="$(read_token)"
+  GITHUB_API_TOKEN="$(
+    voiceink_read_token "$TOKEN_KEYCHAIN_SERVICE" "$TOKEN_KEYCHAIN_ACCOUNT"
+  )"
   export GITHUB_API_TOKEN
-  [[ -n "$GITHUB_API_TOKEN" ]] || die "GitHub token not found. Set VOICEINK_GITHUB_TOKEN/GITHUB_TOKEN or store it in Keychain service '$TOKEN_KEYCHAIN_SERVICE'."
+  [[ -n "$GITHUB_API_TOKEN" ]] ||
+    voiceink_die "GitHub token not found" || return 1
+  voiceink_assert_signing_identity "$SIGN_IDENTITY"
 
-  assert_clean_tree
-  assert_signing_identity
-
-  log "Repository: $repo"
-  log "Branch: $BRANCH"
-  log "Workflow: $WORKFLOW_FILE"
-  log "Install destination: $APP_DESTINATION"
+  voiceink_log "Repository: $repo"
+  voiceink_log "Branch: $BRANCH"
+  voiceink_log "Sync workflow: $SYNC_WORKFLOW"
+  voiceink_log "Build workflow: $BUILD_WORKFLOW"
+  voiceink_log "Install destination: $APP_DESTINATION"
 
   if [[ "$DRY_RUN" == "1" ]]; then
-    log "Dry run complete. No GitHub workflow was started and no app was installed."
-    exit 0
+    if [[ "$SKIP_SYNC" == "1" ]]; then
+      voiceink_log "Dry run: build remote $BRANCH without sync"
+    else
+      voiceink_log "Dry run: sync and auto-merge upstream into remote $BRANCH"
+    fi
+    voiceink_log "Dry run: build, download, sign, and install"
+    return 0
   fi
 
-  if [[ "$SKIP_SYNC" != "1" ]]; then
-    sync_from_upstream
-  else
-    log "Skipping upstream sync"
-  fi
-
-  local head_sha
-  head_sha="$(git rev-parse "$BRANCH")"
-
-  local request_id
-  request_id="local-install-$(date -u '+%Y%m%dT%H%M%SZ')-${head_sha:0:12}"
-
-  local workdir
   workdir="$(mktemp -d "${TMPDIR:-/tmp}/voiceink-update.XXXXXX")"
+  run_remote_update "$repo" "$workdir" "$artifact_cache" || status=$?
 
-  if [[ "$KEEP_WORKDIR" != "1" ]]; then
-    trap "rm -rf -- $(printf '%q' "$workdir")" EXIT
+  if [[ "$KEEP_WORKDIR" == "1" ]]; then
+    voiceink_log "Keeping workdir: $workdir"
   else
-    log "Keeping workdir: $workdir"
+    rm -rf -- "$workdir"
   fi
 
-  local payload
-  payload="$(json_escape_payload "$BRANCH" "$request_id")"
-
-  log "Dispatching GitHub Actions build: $request_id"
-  github_api POST \
-    "https://api.github.com/repos/$repo/actions/workflows/$WORKFLOW_FILE/dispatches" \
-    "$workdir/dispatch.json" \
-    "$payload"
-
-  local run_id
-  run_id="$(wait_for_workflow_run "$repo" "$head_sha" "$request_id" "$workdir")"
-
-  local app_path
-  app_path="$(download_artifact "$repo" "$run_id" "$workdir")"
-  sign_app "$app_path"
-
-  if [[ "$SKIP_INSTALL" == "1" ]]; then
-    log "Signed app is ready at $app_path"
-    exit 0
+  if [[ "$status" == "0" ]]; then
+    voiceink_log "VoiceInk update complete"
   fi
-
-  install_app "$app_path"
-  log "VoiceInk update complete"
+  return "$status"
 }
 
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
