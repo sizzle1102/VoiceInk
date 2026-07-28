@@ -147,6 +147,74 @@ for artifact in artifacts:
 PY
 }
 
+voiceink_find_latest_available_artifact() {
+  local repo="$1"
+  local workflow="$2"
+  local branch="$3"
+  local artifact_name="$4"
+  local workdir="$5"
+  local runs_file="$workdir/runs.json"
+  local artifacts_file=""
+  local run_id=""
+  local head_sha=""
+  local download_url=""
+
+  mkdir -p "$workdir"
+  voiceink_github_api GET \
+    "https://api.github.com/repos/$repo/actions/workflows/$workflow/runs?branch=$branch&status=success&per_page=30" \
+    "$runs_file"
+
+  while IFS=$'\t' read -r run_id head_sha; do
+    [[ -n "$run_id" ]] || continue
+    artifacts_file="$workdir/artifacts-$run_id.json"
+    voiceink_github_api GET \
+      "https://api.github.com/repos/$repo/actions/runs/$run_id/artifacts" \
+      "$artifacts_file"
+    download_url="$(
+      voiceink_artifact_download_url "$artifacts_file" "$artifact_name"
+    )"
+    if [[ -n "$download_url" ]]; then
+      printf '%s\t%s\t%s\n' "$run_id" "$head_sha" "$download_url"
+      return 0
+    fi
+  done < <(
+    python3 - "$runs_file" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "r", encoding="utf-8") as handle:
+    runs = json.load(handle).get("workflow_runs", [])
+
+for run in runs:
+    if run.get("status") == "completed" and run.get("conclusion") == "success":
+        print(f"{run['id']}\t{run.get('head_sha', '')}")
+PY
+  )
+
+  voiceink_die \
+    "No non-expired $artifact_name artifact found for $workflow on $branch"
+}
+
+voiceink_download_artifact_zip() {
+  local download_url="$1"
+  local destination="$2"
+  local destination_dir
+  local temporary_path
+
+  destination_dir="$(dirname "$destination")"
+  temporary_path="$destination.download.$$"
+  mkdir -p "$destination_dir"
+  rm -f -- "$temporary_path"
+
+  if ! voiceink_github_download "$download_url" "$temporary_path"; then
+    rm -f -- "$temporary_path"
+    voiceink_die "Artifact download failed"
+    return 1
+  fi
+
+  mv "$temporary_path" "$destination"
+}
+
 voiceink_extract_artifact_zip() {
   local archive_path="$1"
   local workdir="$2"
