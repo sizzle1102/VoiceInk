@@ -76,12 +76,12 @@ The `make local` command uses:
 
 Your normal `make all` / `make build` commands are completely unaffected.
 
-### Weekly Local Update, Sign, and Install
+### Install or Update Through GitHub Actions
 
 For personal installs, keep the signing certificate local and let GitHub Actions
-only build the unsigned/ad-hoc artifact. The helper script below updates this
-fork from upstream, triggers `.github/workflows/build-local-app.yml`, downloads
-the artifact, signs it locally, and replaces `/Applications/VoiceInk.app`.
+produce the unsigned/ad-hoc artifact. The local scripts download the artifact,
+sign it with the persistent local identity, preserve a timestamped backup, and
+replace `/Applications/VoiceInk.app`.
 
 One-time setup:
 
@@ -105,19 +105,53 @@ security add-generic-password \
   -U
 ```
 
-Run the updater:
+Install the newest successful `main` artifact that is still available:
 
 ```bash
-scripts/update-build-sign-install.sh
+make install
 ```
+
+GitHub retains `VoiceInk-app` for one day. If no successful artifact is still
+available, use `make update-install` to produce a new one.
+
+Install an artifact that was downloaded manually:
+
+```bash
+make install ZIP="/path/to/VoiceInk-app.zip"
+```
+
+The ZIP override does not access GitHub and does not overwrite the repository
+cache at `artifacts/VoiceInk-app.zip`.
+
+Run the complete update cycle:
+
+```bash
+make update-install
+```
+
+This dispatches `sync-upstream.yml`, merges `Beingpax/VoiceInk:main` into the
+fork's `sync/upstream-main` branch, creates or updates the sync pull request,
+and automatically merges it without bypassing repository protection rules.
+After sync succeeds, the local updater reads the resulting remote `main` SHA,
+dispatches `build-local-app.yml`, verifies that the matching run built that
+exact SHA, downloads its artifact, signs it locally, and installs it.
+
+The update command does not merge or push through the local Git checkout.
+Local commits and working-tree changes cannot enter the sync or build.
 
 Useful overrides:
 
 ```bash
-VOICEINK_SIGN_IDENTITY="Your Certificate Name" scripts/update-build-sign-install.sh
+VOICEINK_SIGN_IDENTITY="Your Certificate Name" make install
+scripts/update-build-sign-install.sh --skip-sync
 scripts/update-build-sign-install.sh --skip-install
 scripts/update-build-sign-install.sh --dry-run
 ```
+
+`--skip-sync` builds the current remote `main`. `--skip-install` keeps the
+temporary work directory so the signed application can be inspected.
+
+### Weekly Update
 
 Install a weekly user LaunchAgent:
 
@@ -125,8 +159,11 @@ Install a weekly user LaunchAgent:
 scripts/install-weekly-updater-launchagent.sh install
 ```
 
-The LaunchAgent runs every 604800 seconds while your user session is active.
-Logs are written to `~/Library/Logs/VoiceInk/update-build-sign-install.*.log`.
+The LaunchAgent runs the same updater used by `make update-install` every
+604800 seconds while your user session is active. It therefore performs the
+remote sync, automatic PR merge, new Actions build, local signing, and
+installation. Logs are written to
+`~/Library/Logs/VoiceInk/update-build-sign-install.*.log`.
 
 Remove it with:
 
