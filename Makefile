@@ -4,7 +4,7 @@ WHISPER_CPP_DIR := $(DEPS_DIR)/whisper.cpp
 FRAMEWORK_PATH := $(WHISPER_CPP_DIR)/build-apple/whisper.xcframework
 LOCAL_DERIVED_DATA := $(CURDIR)/.local-build
 
-.PHONY: all clean whisper setup build local install update-install install-weekly-updater uninstall-weekly-updater check healthcheck help dev run
+.PHONY: all clean whisper setup build local install update-install install-weekly-updater uninstall-weekly-updater check healthcheck help dev run release release-setup
 
 # Default target
 all: check build
@@ -109,6 +109,18 @@ install-weekly-updater:
 uninstall-weekly-updater:
 	scripts/install-weekly-updater-launchagent.sh uninstall
 
+# Build a signed, notarized DMG and matching local Sparkle Appcast.
+release: whisper
+	@if [ -n "$(NOTES)" ]; then \
+		./scripts/release.sh --notes "$(NOTES)" $(RELEASE_ARGS); \
+	else \
+		./scripts/release.sh $(RELEASE_ARGS); \
+	fi
+
+# Store Apple's notarization credentials securely in Keychain.
+release-setup:
+	@./scripts/setup-release-notarization.sh
+
 # Cleanup
 clean:
 	@echo "Cleaning build artifacts..."
@@ -129,6 +141,8 @@ help:
 	@echo "  uninstall-weekly-updater  Remove weekly local update/sign/install LaunchAgent"
 	@echo "  run                Launch the built VoiceInk app"
 	@echo "  dev                Build and run the app (for development)"
+	@echo "  release            Build DMG and Appcast using release-notes/<version>.html"
+	@echo "  release-setup      Store notarization credentials in Keychain"
 	@echo "  all                Run full build process (default)"
 	@echo "  clean              Remove build artifacts"
 	@echo "  help               Show this help message"
