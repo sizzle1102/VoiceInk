@@ -50,13 +50,15 @@ make update-install
 
 This command:
 
-1. dispatches `sync-upstream.yml` with automatic merge enabled;
+1. dispatches `sync-upstream.yml` with automatic merge enabled and a unique
+   request ID;
 2. waits for the sync workflow to finish successfully;
 3. reads the resulting `main` head SHA from GitHub;
 4. dispatches `build-local-app.yml` for `main` with a unique request ID;
 5. waits for the matching run and verifies that it built the expected SHA;
 6. downloads that run's `VoiceInk-app` artifact;
-7. signs and installs it locally.
+7. updates `artifacts/VoiceInk-app.zip` atomically;
+8. signs and installs it locally.
 
 The command no longer fetches, checks out, merges, commits, or pushes through
 the local Git checkout. Local commits and working-tree state cannot enter the
@@ -64,9 +66,11 @@ sync or build.
 
 ## GitHub Actions synchronization
 
-Extend `sync-upstream.yml` with a boolean `auto_merge` input for
-`workflow_dispatch`. Scheduled runs keep `auto_merge: false` behavior and only
-create or update the sync PR.
+Extend `sync-upstream.yml` with a boolean `auto_merge` input and a string
+`request_id` input for `workflow_dispatch`. Include the request ID in the run
+name so the local updater can identify its exact sync run when other runs are
+concurrent. Scheduled runs keep `auto_merge: false` behavior and only create or
+update the sync PR.
 
 When `auto_merge: true`, the workflow:
 
