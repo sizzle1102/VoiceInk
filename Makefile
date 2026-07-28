@@ -124,7 +124,7 @@ help:
 	@echo "  build              Build the VoiceInk Xcode project"
 	@echo "  local              Build for local use (no Apple Developer certificate needed)"
 	@echo "  install            Install latest successful Actions artifact (or ZIP=/path)"
-	@echo "  update-install     Update from upstream, build on GitHub, sign locally, install"
+	@echo "  update-install     Sync/merge upstream in Actions, build, sign, and install"
 	@echo "  install-weekly-updater    Install weekly local update/sign/install LaunchAgent"
 	@echo "  uninstall-weekly-updater  Remove weekly local update/sign/install LaunchAgent"
 	@echo "  run                Launch the built VoiceInk app"
