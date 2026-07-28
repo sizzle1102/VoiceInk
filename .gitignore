@@ -33,6 +33,7 @@ playground.xcworkspace
 build/
 .local-build/
 .worktrees/
+artifacts/
 
 # CocoaPods
 #
