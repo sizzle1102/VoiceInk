@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck disable=SC1091
+source "$SCRIPT_DIR/lib/voiceink-install-common.sh"
+
 SCRIPT_NAME="$(basename "$0")"
 
 BRANCH="${VOICEINK_BRANCH:-main}"
@@ -57,35 +61,37 @@ Environment:
 EOF
 }
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --skip-sync)
-      SKIP_SYNC=1
-      ;;
-    --skip-install)
-      SKIP_INSTALL=1
-      ;;
-    --keep-workdir)
-      KEEP_WORKDIR=1
-      ;;
-    --dry-run)
-      DRY_RUN=1
-      ;;
-    --no-relaunch)
-      RELAUNCH=0
-      ;;
-    -h|--help)
-      usage
-      exit 0
-      ;;
-    *)
-      echo "Unknown option: $1" >&2
-      usage >&2
-      exit 2
-      ;;
-  esac
-  shift
-done
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --skip-sync)
+        SKIP_SYNC=1
+        ;;
+      --skip-install)
+        SKIP_INSTALL=1
+        ;;
+      --keep-workdir)
+        KEEP_WORKDIR=1
+        ;;
+      --dry-run)
+        DRY_RUN=1
+        ;;
+      --no-relaunch)
+        RELAUNCH=0
+        ;;
+      -h|--help)
+        usage
+        return 2
+        ;;
+      *)
+        echo "Unknown option: $1" >&2
+        usage >&2
+        return 1
+        ;;
+    esac
+    shift
+  done
+}
 
 log() {
   printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" >&2
@@ -367,8 +373,6 @@ download_artifact() {
 
   local artifacts_file="$workdir/artifacts.json"
   local artifact_zip="$workdir/$ARTIFACT_NAME.zip"
-  local artifact_dir="$workdir/artifact"
-  local app_zip=""
 
   github_api GET \
     "https://api.github.com/repos/$repo/actions/runs/$run_id/artifacts" \
@@ -381,84 +385,40 @@ download_artifact() {
   log "Downloading artifact $ARTIFACT_NAME"
   github_download "$download_url" "$artifact_zip"
 
-  mkdir -p "$artifact_dir"
-  unzip -q "$artifact_zip" -d "$artifact_dir"
-
-  app_zip="$(find "$artifact_dir" -maxdepth 1 -name '*.app.zip' -type f | head -n 1)"
-  [[ -n "$app_zip" ]] || die "Downloaded artifact does not contain a .app.zip file"
-
-  mkdir -p "$workdir/app"
-  unzip -q "$app_zip" -d "$workdir/app"
-
-  local app_path="$workdir/app/VoiceInk.app"
-  [[ -d "$app_path" ]] || die "Downloaded app not found at $app_path"
-
-  printf '%s' "$app_path"
+  voiceink_extract_artifact_zip "$artifact_zip" "$workdir" "$BUNDLE_ID"
 }
 
 sign_app() {
   local app_path="$1"
 
-  log "Signing app with identity: $SIGN_IDENTITY"
-  xattr -cr "$app_path" 2>/dev/null || true
-  # A local self-signed certificate has no Apple Team ID. Enabling the hardened
-  # runtime would turn on library validation and prevent VoiceInk from loading
-  # its bundled debug dylib, even though both are signed by this certificate.
-  codesign --force --deep --sign "$SIGN_IDENTITY" "$app_path"
-  codesign --verify --deep --strict --verbose=2 "$app_path"
+  voiceink_sign_app "$app_path" "$SIGN_IDENTITY"
 }
 
 quit_existing_app() {
-  log "Quitting existing VoiceInk process if it is running"
-  osascript -e "tell application id \"$BUNDLE_ID\" to quit" >/dev/null 2>&1 || true
-
-  local deadline=$(( $(date +%s) + 15 ))
-  while pgrep -x "$APP_PROCESS_NAME" >/dev/null 2>&1 && [[ $(date +%s) -lt $deadline ]]; do
-    sleep 1
-  done
-
-  if pgrep -x "$APP_PROCESS_NAME" >/dev/null 2>&1; then
-    pkill -TERM -x "$APP_PROCESS_NAME" >/dev/null 2>&1 || true
-    sleep 2
-  fi
-
-  if pgrep -x "$APP_PROCESS_NAME" >/dev/null 2>&1; then
-    die "VoiceInk is still running. Quit it manually and rerun."
-  fi
+  voiceink_quit_existing_app "$BUNDLE_ID" "$APP_PROCESS_NAME"
 }
 
 install_app() {
   local app_path="$1"
-  local backup_path=""
 
-  [[ -d "$app_path" ]] || die "Signed app is missing: $app_path"
-
-  quit_existing_app
-
-  if [[ -e "$APP_DESTINATION" ]]; then
-    backup_path="${APP_DESTINATION}.backup.$(date '+%Y%m%d%H%M%S')"
-    log "Moving current app to $backup_path"
-    mv "$APP_DESTINATION" "$backup_path"
-  fi
-
-  log "Installing signed app to $APP_DESTINATION"
-  if ! ditto "$app_path" "$APP_DESTINATION"; then
-    if [[ -n "$backup_path" && -d "$backup_path" && ! -e "$APP_DESTINATION" ]]; then
-      mv "$backup_path" "$APP_DESTINATION" || true
-    fi
-    die "Install failed"
-  fi
-
-  xattr -cr "$APP_DESTINATION" 2>/dev/null || true
-  codesign --verify --deep --strict --verbose=2 "$APP_DESTINATION"
-
-  if [[ "$RELAUNCH" == "1" ]]; then
-    log "Opening installed app"
-    open "$APP_DESTINATION"
-  fi
+  voiceink_install_app \
+    "$app_path" \
+    "$APP_DESTINATION" \
+    "$BUNDLE_ID" \
+    "$APP_PROCESS_NAME" \
+    "$RELAUNCH"
 }
 
 main() {
+  local parse_status=0
+  parse_args "$@" || parse_status=$?
+  if [[ "$parse_status" == "2" ]]; then
+    return 0
+  fi
+  if [[ "$parse_status" != "0" ]]; then
+    return "$parse_status"
+  fi
+
   require_command curl
   require_command unzip
   require_command ditto
@@ -471,6 +431,7 @@ main() {
   require_command pgrep
   require_command pkill
   require_command find
+  require_command plutil
 
   local root
   root="$(repo_root)" || die "Run this script inside the VoiceInk git repository"
@@ -542,4 +503,6 @@ main() {
   log "VoiceInk update complete"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

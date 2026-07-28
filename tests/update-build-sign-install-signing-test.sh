@@ -2,15 +2,12 @@
 set -euo pipefail
 
 TEST_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-UPDATER_LIBRARY="$(mktemp /private/tmp/voiceink-updater-signing-library.XXXXXX)"
 CODE_SIGN_ARGS="$(mktemp /private/tmp/voiceink-updater-signing-args.XXXXXX)"
 TEST_APP_ROOT="$(mktemp -d /private/tmp/voiceink-updater-signing-app.XXXXXX)"
-trap 'rm -f "$UPDATER_LIBRARY" "$CODE_SIGN_ARGS"; rm -rf "$TEST_APP_ROOT"' EXIT
+trap 'rm -f "$CODE_SIGN_ARGS"; rm -rf "$TEST_APP_ROOT"' EXIT
 
-# Load updater functions without executing main.
 # shellcheck disable=SC1090
-sed '$d' "$TEST_ROOT/scripts/update-build-sign-install.sh" > "$UPDATER_LIBRARY"
-source "$UPDATER_LIBRARY"
+source "$TEST_ROOT/scripts/update-build-sign-install.sh"
 
 xattr() { :; }
 codesign() {
