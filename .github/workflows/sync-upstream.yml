@@ -1,7 +1,19 @@
 name: Sync upstream
 
+run-name: Sync upstream ${{ inputs.request_id || github.run_number }}
+
 on:
   workflow_dispatch:
+    inputs:
+      request_id:
+        description: Unique id used by local automation to find this run
+        required: false
+        type: string
+      auto_merge:
+        description: Merge the generated sync PR
+        required: false
+        default: false
+        type: boolean
   schedule:
     - cron: "0 6 * * 1"
 
@@ -32,6 +44,7 @@ jobs:
           SYNC_BRANCH: sync/upstream-main
           UPSTREAM_REPO: https://github.com/Beingpax/VoiceInk.git
           UPSTREAM_BRANCH: main
+          AUTO_MERGE: ${{ inputs.auto_merge || false }}
         run: |
           set -euo pipefail
 
@@ -52,14 +65,59 @@ jobs:
 
           git push --force-with-lease origin "$SYNC_BRANCH"
 
-          if gh pr view "$SYNC_BRANCH" --json number >/dev/null 2>&1; then
-            gh pr edit "$SYNC_BRANCH" \
+          sync_head_sha="$(git rev-parse HEAD)"
+          pr_number="$(
+            gh pr list \
+              --repo "$GH_REPO" \
+              --base "$BASE_BRANCH" \
+              --head "$SYNC_BRANCH" \
+              --state open \
+              --json number \
+              --jq '.[0].number // empty'
+          )"
+
+          if [[ -n "$pr_number" ]]; then
+            gh pr edit "$pr_number" \
+              --repo "$GH_REPO" \
               --title "Sync upstream VoiceInk" \
               --body "Merge latest changes from Beingpax/VoiceInk into this fork."
           else
             gh pr create \
+              --repo "$GH_REPO" \
               --base "$BASE_BRANCH" \
               --head "$SYNC_BRANCH" \
               --title "Sync upstream VoiceInk" \
               --body "Merge latest changes from Beingpax/VoiceInk into this fork."
+            pr_number="$(
+              gh pr list \
+                --repo "$GH_REPO" \
+                --base "$BASE_BRANCH" \
+                --head "$SYNC_BRANCH" \
+                --state open \
+                --json number \
+                --jq '.[0].number // empty'
+            )"
+            [[ -n "$pr_number" ]] || {
+              echo "Sync PR was not found after creation." >&2
+              exit 1
+            }
+          fi
+
+          if [[ "$AUTO_MERGE" == "true" ]]; then
+            pr_head_sha="$(
+              gh pr view "$pr_number" \
+                --repo "$GH_REPO" \
+                --json headRefOid \
+                --jq .headRefOid
+            )"
+            [[ "$pr_head_sha" == "$sync_head_sha" ]] || {
+              echo "Sync PR head changed before merge." >&2
+              exit 1
+            }
+
+            gh pr merge "$pr_number" \
+              --repo "$GH_REPO" \
+              --merge \
+              --match-head-commit "$sync_head_sha" \
+              --delete-branch
           fi
