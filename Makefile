@@ -94,6 +94,8 @@ test-companion-xcode:
 		DEVELOPMENT_TEAM="" \
 		CODE_SIGN_ENTITLEMENTS="$(CURDIR)/VoiceInk/VoiceInk.local.entitlements" \
 		SWIFT_ACTIVE_COMPILATION_CONDITIONS='$$(inherited) LOCAL_BUILD' \
+		ENABLE_TESTABILITY=YES \
+		MACOSX_DEPLOYMENT_TARGET=14.4 \
 		-only-testing:VoiceInkTests
 
 # Run application
