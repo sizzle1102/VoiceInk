@@ -4,7 +4,7 @@ WHISPER_CPP_DIR := $(DEPS_DIR)/whisper.cpp
 FRAMEWORK_PATH := $(WHISPER_CPP_DIR)/build-apple/whisper.xcframework
 LOCAL_DERIVED_DATA := $(CURDIR)/.local-build
 
-.PHONY: all clean whisper setup build local install update-install install-weekly-updater uninstall-weekly-updater check healthcheck help dev run release release-setup
+.PHONY: all clean whisper setup build local install update-install install-weekly-updater uninstall-weekly-updater check healthcheck help dev run release release-setup test-companion companion-transcribe test-companion-xcode
 
 # Default target
 all: check build
@@ -75,6 +75,26 @@ local: check setup
 		echo "Error: Could not find built VoiceInk.app at $$APP_PATH"; \
 		exit 1; \
 	fi
+
+test-companion:
+	bash tests/inbox-companion-cli-test.sh
+
+companion-transcribe:
+	@test -n "$(INPUT)" || { echo "Usage: make companion-transcribe INPUT=/path/to/audio" >&2; exit 2; }
+	Companion/voiceink-inbox-transcribe "$(INPUT)"
+
+test-companion-xcode:
+	xcodebuild test -project VoiceInk.xcodeproj -scheme VoiceInk \
+		-destination 'platform=macOS' \
+		-derivedDataPath "$(CURDIR)/.local-build-tests" \
+		-xcconfig LocalBuild.xcconfig \
+		CODE_SIGN_IDENTITY="-" \
+		CODE_SIGNING_REQUIRED=NO \
+		CODE_SIGNING_ALLOWED=YES \
+		DEVELOPMENT_TEAM="" \
+		CODE_SIGN_ENTITLEMENTS="$(CURDIR)/VoiceInk/VoiceInk.local.entitlements" \
+		SWIFT_ACTIVE_COMPILATION_CONDITIONS='$$(inherited) LOCAL_BUILD' \
+		-only-testing:VoiceInkTests
 
 # Run application
 run:

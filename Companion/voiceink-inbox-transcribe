@@ -1,0 +1,240 @@
+#!/usr/bin/env bash
+set -euo pipefail
+umask 077
+
+contract_version=1
+contract_scheme='voiceink-inbox'
+contract_host='transcribe'
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+prompt_path="$script_dir/inbox-transcription-prompt.txt"
+request_directory=''
+
+write_empty_plist() {
+  local path="$1"
+
+  printf '%s\n' \
+    '<?xml version="1.0" encoding="UTF-8"?>' \
+    '<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">' \
+    '<plist version="1.0"><dict/></plist>' > "$path"
+}
+
+emit_failure() {
+  local request_id="$1"
+  local code="$2"
+  local phase="$3"
+  local message="$4"
+  local retryable="$5"
+  local failure_directory
+  local failure_plist
+  local failure_json
+
+  failure_directory="$(mktemp -d "${TMPDIR:-/tmp}/voiceink-inbox-failure.XXXXXX")"
+  failure_plist="$failure_directory/response.plist"
+  failure_json="$failure_directory/response.json"
+  write_empty_plist "$failure_plist"
+  /usr/bin/plutil -insert contractVersion -integer "$contract_version" "$failure_plist"
+  /usr/bin/plutil -insert requestId -string "$request_id" "$failure_plist"
+  /usr/bin/plutil -insert status -string failure "$failure_plist"
+  /usr/bin/plutil -insert error -dictionary "$failure_plist"
+  /usr/bin/plutil -insert error.code -string "$code" "$failure_plist"
+  /usr/bin/plutil -insert error.phase -string "$phase" "$failure_plist"
+  /usr/bin/plutil -insert error.message -string "$message" "$failure_plist"
+  /usr/bin/plutil -insert error.retryable -bool "$retryable" "$failure_plist"
+  /usr/bin/plutil -convert json -o "$failure_json" "$failure_plist"
+  cat "$failure_json"
+  rm -rf "$failure_directory"
+}
+
+cleanup() {
+  if [[ -n "$request_directory" && -d "$request_directory" ]]; then
+    rm -rf "$request_directory"
+  fi
+}
+
+write_cancellation_marker() {
+  if [[ -n "$request_directory" && -d "$request_directory" ]]; then
+    : > "$request_directory/cancel"
+  fi
+}
+
+handle_signal() {
+  write_cancellation_marker
+  emit_failure "$request_id" cancelled invocation 'The transcription request was cancelled.' false
+  exit 130
+}
+
+url_encode() {
+  local value="$1"
+  local encoded=''
+  local character
+  local hex
+  local index
+  local LC_ALL=C
+
+  for ((index = 0; index < ${#value}; index += 1)); do
+    character="${value:index:1}"
+    case "$character" in
+      [a-zA-Z0-9.~_-])
+        encoded+="$character"
+        ;;
+      *)
+        printf -v hex '%02X' "'$character"
+        encoded+="%$hex"
+        ;;
+    esac
+  done
+
+  printf '%s' "$encoded"
+}
+
+absolute_path() {
+  local path="$1"
+  local parent
+  local name
+
+  if [[ "$path" == /* ]]; then
+    printf '%s' "$path"
+    return
+  fi
+
+  parent="$(dirname "$path")"
+  name="$(basename "$path")"
+  if [[ -d "$parent" ]]; then
+    printf '%s/%s' "$(cd "$parent" && pwd -P)" "$name"
+  else
+    printf '%s/%s' "$(pwd -P)" "$path"
+  fi
+}
+
+request_id=''
+timeout_seconds=300
+input_argument=''
+
+while (($#)); do
+  case "$1" in
+    --request-id)
+      (($# >= 2)) || {
+        request_id="$(/usr/bin/uuidgen | tr '[:upper:]' '[:lower:]')"
+        emit_failure "$request_id" invalid_invocation invocation 'The --request-id option requires a UUID.' false
+        exit 2
+      }
+      request_id="$2"
+      shift 2
+      ;;
+    --timeout)
+      (($# >= 2)) || {
+        request_id="$(/usr/bin/uuidgen | tr '[:upper:]' '[:lower:]')"
+        emit_failure "$request_id" invalid_invocation invocation 'The --timeout option requires seconds.' false
+        exit 2
+      }
+      timeout_seconds="$2"
+      shift 2
+      ;;
+    --help|-h)
+      printf 'Usage: %s [--request-id UUID] [--timeout SECONDS] INPUT\n' "${0##*/}"
+      exit 0
+      ;;
+    --*)
+      request_id="$(/usr/bin/uuidgen | tr '[:upper:]' '[:lower:]')"
+      emit_failure "$request_id" invalid_invocation invocation 'The invocation contains an unknown option.' false
+      exit 2
+      ;;
+    *)
+      if [[ -n "$input_argument" ]]; then
+        request_id="$(/usr/bin/uuidgen | tr '[:upper:]' '[:lower:]')"
+        emit_failure "$request_id" invalid_invocation invocation 'The invocation must contain exactly one input path.' false
+        exit 2
+      fi
+      input_argument="$1"
+      shift
+      ;;
+  esac
+done
+
+if [[ -z "$request_id" ]]; then
+  request_id="$(/usr/bin/uuidgen | tr '[:upper:]' '[:lower:]')"
+fi
+
+uuid_pattern='^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
+if [[ ! "$request_id" =~ $uuid_pattern ]]; then
+  emit_failure "$request_id" invalid_invocation invocation 'The request ID must be a UUID.' false
+  exit 2
+fi
+
+if [[ -z "$input_argument" ]]; then
+  emit_failure "$request_id" invalid_invocation invocation 'The invocation must contain one input path.' false
+  exit 2
+fi
+
+if [[ ! "$timeout_seconds" =~ ^[1-9][0-9]*$ ]]; then
+  emit_failure "$request_id" invalid_invocation invocation 'The timeout must be a positive number of seconds.' false
+  exit 2
+fi
+
+input_path="$(absolute_path "$input_argument")"
+if [[ ! -e "$input_path" ]]; then
+  emit_failure "$request_id" input_missing validation 'The input file does not exist.' false
+  exit 1
+fi
+
+if [[ ! -f "$input_path" ]]; then
+  emit_failure "$request_id" input_unsupported validation 'The input path is not a regular file.' false
+  exit 1
+fi
+
+if [[ ! -r "$input_path" ]]; then
+  emit_failure "$request_id" input_unreadable validation 'The input file is not readable.' false
+  exit 1
+fi
+
+if [[ ! -e "$prompt_path" ]]; then
+  emit_failure "$request_id" prompt_missing validation 'The companion prompt does not exist.' false
+  exit 1
+fi
+
+if [[ ! -f "$prompt_path" || ! -r "$prompt_path" ]]; then
+  emit_failure "$request_id" prompt_unreadable validation 'The companion prompt is not readable.' false
+  exit 1
+fi
+
+if ! /usr/bin/iconv -f UTF-8 -t UTF-8 "$prompt_path" >/dev/null 2>&1; then
+  emit_failure "$request_id" prompt_invalid_utf8 validation 'The companion prompt is not valid UTF-8.' false
+  exit 1
+fi
+
+request_root="${TMPDIR:-/tmp}/voiceink-inbox-companion"
+mkdir -p "$request_root"
+request_directory="$(mktemp -d "$request_root/request.XXXXXX")"
+trap cleanup EXIT
+trap handle_signal HUP INT TERM
+
+request_plist="$request_directory/request.plist"
+request_json="$request_directory/request.json"
+response_path="$request_directory/response.json"
+cancellation_path="$request_directory/cancel"
+write_empty_plist "$request_plist"
+/usr/bin/plutil -insert contractVersion -integer "$contract_version" "$request_plist"
+/usr/bin/plutil -insert requestId -string "$request_id" "$request_plist"
+/usr/bin/plutil -insert inputPath -string "$input_path" "$request_plist"
+/usr/bin/plutil -insert promptPath -string "$prompt_path" "$request_plist"
+/usr/bin/plutil -insert responsePath -string "$response_path" "$request_plist"
+/usr/bin/plutil -insert cancellationPath -string "$cancellation_path" "$request_plist"
+/usr/bin/plutil -insert timeoutSeconds -float "$timeout_seconds" "$request_plist"
+/usr/bin/plutil -convert json -o "$request_json" "$request_plist"
+rm -f "$request_plist"
+
+open_command="${VOICEINK_COMPANION_OPEN_COMMAND:-/usr/bin/open}"
+invocation_url="$contract_scheme://$contract_host?request=$(url_encode "$request_json")"
+"$open_command" -gj -a "${VOICEINK_COMPANION_APP:-VoiceInk}" "$invocation_url"
+
+deadline=$(( $(/bin/date +%s) + timeout_seconds ))
+while [[ ! -f "$response_path" ]]; do
+  if (( $(/bin/date +%s) >= deadline )); then
+    write_cancellation_marker
+    emit_failure "$request_id" timeout waiting 'The VoiceInk transcription request timed out.' true
+    exit 1
+  fi
+  /bin/sleep 0.1
+done
+
+cat "$response_path"

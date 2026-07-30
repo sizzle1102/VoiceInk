@@ -1,0 +1,25 @@
+name: Test inbox companion
+
+run-name: Test inbox companion ${{ inputs.request_id || github.run_number }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: Unique id used to identify this manual verification run
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: macos-26
+
+    steps:
+      - uses: actions/checkout@v6
+      - run: make test-companion
+      - run: make whisper
+      - run: make test-companion-xcode
+      - run: make local
