@@ -154,7 +154,13 @@ struct InboxCompanionPreflightTests {
         modes: [ModeConfig],
         model: (any TranscriptionModel)? = nil,
         isModelUsable: Bool = true
-    ) throws -> (request: InboxCompanionRequest, modes: [ModeConfig], manager: TranscriptionModelManager) {
+    ) throws -> (
+        request: InboxCompanionRequest,
+        modes: [ModeConfig],
+        manager: TranscriptionModelManager,
+        whisperModelManager: WhisperModelManager,
+        fluidAudioModelManager: FluidAudioModelManager
+    ) {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let inputURL = directory.appendingPathComponent("input.m4a")
@@ -191,7 +197,9 @@ struct InboxCompanionPreflightTests {
                 timeoutSeconds: 30
             ),
             modes,
-            manager
+            manager,
+            whisper,
+            fluidAudio
         )
     }
 }
