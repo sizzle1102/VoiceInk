@@ -9,6 +9,11 @@ on:
         description: Unique id used by local automation to find this run
         required: false
         type: string
+      run_companion_tests:
+        description: Run inbox companion Bash and Xcode tests
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -26,6 +31,18 @@ jobs:
         run: |
           xcodebuild -version
           xcode-select -p
+
+      - name: Test inbox companion Bash contract
+        if: ${{ inputs.run_companion_tests }}
+        run: make test-companion
+
+      - name: Build whisper for inbox companion tests
+        if: ${{ inputs.run_companion_tests }}
+        run: make whisper
+
+      - name: Test inbox companion Xcode contract
+        if: ${{ inputs.run_companion_tests }}
+        run: make test-companion-xcode
 
       - name: Build local app
         run: make local
