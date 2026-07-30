@@ -21,6 +21,16 @@ struct InboxTranscriptionRunnerTests {
         #expect(transcriptions.isEmpty)
     }
 
+    @Test func runnerCompletesBackendCleanupBeforeReturningResponse() async throws {
+        let fixture = try makeFixture()
+        let backend = FakeBackend(result: .success("Hello."))
+        let runner = InboxTranscriptionRunner(audioPreparer: FakeAudioPreparer(), backend: backend, modelContext: fixture.modelContext)
+
+        _ = await runner.run(request: fixture.request, snapshot: fixture.snapshot, cancellation: TranscriptionCancellationToken())
+
+        #expect(backend.didCleanup)
+    }
+
     @Test func runnerUsesRequestScopedWAVAndDeletesItAfterSuccess() async throws {
         let fixture = try makeFixture()
         let audio = FakeAudioPreparer()
@@ -153,6 +163,7 @@ private final class FakeAudioPreparer: InboxAudioPreparing {
 @MainActor
 private final class FakeBackend: InboxTranscriptionBackend {
     let result: Result<String, Error>
+    private(set) var didCleanup = false
 
     init(result: Result<String, Error>) {
         self.result = result
@@ -162,7 +173,7 @@ private final class FakeBackend: InboxTranscriptionBackend {
         try result.get()
     }
 
-    func cleanup() async {}
+    func cleanup() async { didCleanup = true }
 }
 
 private enum TestError: Error {
