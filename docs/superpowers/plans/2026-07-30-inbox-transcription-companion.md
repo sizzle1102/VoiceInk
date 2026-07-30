@@ -33,7 +33,7 @@
 - Create: `Companion/voiceink-inbox-transcribe`
 - Create: `Companion/inbox-transcription-prompt.txt`
 - Create: `tests/inbox-companion-cli-test.sh`
-- Create: `.github/workflows/test-inbox-companion.yml`
+- Modify: `.github/workflows/build-local-app.yml`
 - Modify: `Makefile`
 
 **Interfaces:**
@@ -213,16 +213,16 @@ companion-transcribe:
 	Companion/voiceink-inbox-transcribe "$(INPUT)"
 ```
 
-- [ ] **Step 6: Add the remote macOS verification entrypoint**
+- [ ] **Step 6: Add an opt-in remote macOS verification entrypoint**
 
-Create a manual `macos-26` workflow named `Test inbox companion`, with run name `Test inbox companion ${{ inputs.request_id || github.run_number }}`, `contents: read`, a `request_id` input, and these initial steps:
+Extend the existing default-branch `build-local-app.yml` dispatch inputs with:
 
 ```yaml
-- uses: actions/checkout@v6
-- run: make test-companion
-- run: make whisper
-- run: make test-companion-xcode
-- run: make local
+run_companion_tests:
+  description: Run inbox companion Bash and Xcode tests
+  required: false
+  default: false
+  type: boolean
 ```
 
 Add this target so later Swift tests can be watched failing and passing without installing Xcode locally:
@@ -242,6 +242,8 @@ test-companion-xcode:
 		-only-testing:VoiceInkTests
 ```
 
+Before the existing `Build local app` step, add conditional `make test-companion`, `make whisper`, and `make test-companion-xcode` steps guarded by `${{ inputs.run_companion_tests }}`. The ordinary workflow path remains unchanged when the flag is false. This existing workflow is the dispatch entrypoint because GitHub only permits `workflow_dispatch` for workflow files that already exist on the default branch.
+
 - [ ] **Step 7: Run tests, commit, push, and verify the clean remote baseline**
 
 Run:
@@ -260,13 +262,13 @@ git add VoiceInk/InboxCompanion/Shared/InboxCompanionContract.swift \
   Companion/voiceink-inbox-transcribe \
   Companion/inbox-transcription-prompt.txt \
   tests/inbox-companion-cli-test.sh \
-  .github/workflows/test-inbox-companion.yml \
+  .github/workflows/build-local-app.yml \
   Makefile
 git commit -m "feat: add inbox companion contract and cli"
 git push -u origin codex/inbox-transcription-companion
 ```
 
-Dispatch the workflow on this branch and require a successful baseline app/test build before Task 2.
+Dispatch the existing workflow on this branch with `run_companion_tests=true` and require a successful baseline app/test build before Task 2.
 
 ---
 
@@ -310,10 +312,11 @@ The first remote compilation run will use:
 
 ```bash
 git push origin HEAD:codex/inbox-companion-red-task2
-gh workflow run test-inbox-companion.yml \
+gh workflow run build-local-app.yml \
   --repo sizzle1102/VoiceInk \
   --ref codex/inbox-companion-red-task2 \
-  -f request_id=red-task2
+  -f request_id=red-task2 \
+  -f run_companion_tests=true
 ```
 
 Wait for the exact `red-task2` run. Expected: FAIL in `make test-companion-xcode` because `InboxCompanionPreflight` does not exist.
@@ -431,10 +434,11 @@ git add VoiceInk/InboxCompanion/InboxCompanionPreflight.swift \
   VoiceInkTests/InboxTranscriptionRunnerTests.swift
 git commit -m "feat: add side-effect-free inbox transcription pipeline"
 git push origin codex/inbox-transcription-companion
-gh workflow run test-inbox-companion.yml \
+gh workflow run build-local-app.yml \
   --repo sizzle1102/VoiceInk \
   --ref codex/inbox-transcription-companion \
-  -f request_id=green-task2
+  -f request_id=green-task2 \
+  -f run_companion_tests=true
 ```
 
 Wait for the exact `green-task2` run. Expected: all companion Bash tests, VoiceInk unit tests, and app build PASS.
@@ -478,10 +482,11 @@ Run:
 
 ```bash
 git push origin HEAD:codex/inbox-companion-red-task3
-gh workflow run test-inbox-companion.yml \
+gh workflow run build-local-app.yml \
   --repo sizzle1102/VoiceInk \
   --ref codex/inbox-companion-red-task3 \
-  -f request_id=red-task3
+  -f request_id=red-task3 \
+  -f run_companion_tests=true
 ```
 
 Wait for the exact `red-task3` run. Expected: FAIL in `make test-companion-xcode` because `InboxCompanionBridge` does not exist.
@@ -527,10 +532,11 @@ git add VoiceInk/InboxCompanion/InboxCompanionBridge.swift \
   VoiceInk/Info.plist
 git commit -m "feat: add private inbox companion bridge"
 git push origin codex/inbox-transcription-companion
-gh workflow run test-inbox-companion.yml \
+gh workflow run build-local-app.yml \
   --repo sizzle1102/VoiceInk \
   --ref codex/inbox-transcription-companion \
-  -f request_id=green-task3
+  -f request_id=green-task3 \
+  -f run_companion_tests=true
 ```
 
 Wait for the exact `green-task3` run. Expected: all companion Bash tests, VoiceInk unit tests, and app build PASS.
@@ -572,10 +578,11 @@ Run:
 
 ```bash
 git push origin HEAD:codex/inbox-companion-red-task4
-gh workflow run test-inbox-companion.yml \
+gh workflow run build-local-app.yml \
   --repo sizzle1102/VoiceInk \
   --ref codex/inbox-companion-red-task4 \
-  -f request_id=red-task4
+  -f request_id=red-task4 \
+  -f run_companion_tests=true
 ```
 
 Wait for the exact `red-task4` run. Expected: FAIL in `make test-companion-xcode` because the token and deadline race do not exist.
@@ -604,10 +611,11 @@ git add VoiceInk/InboxCompanion/TranscriptionCancellationToken.swift \
   VoiceInk/InboxCompanion/InboxTranscriptionRunner.swift
 git commit -m "feat: add bounded companion cancellation"
 git push origin codex/inbox-transcription-companion
-gh workflow run test-inbox-companion.yml \
+gh workflow run build-local-app.yml \
   --repo sizzle1102/VoiceInk \
   --ref codex/inbox-transcription-companion \
-  -f request_id=green-task4
+  -f request_id=green-task4 \
+  -f run_companion_tests=true
 ```
 
 Wait for the exact `green-task4` run. Expected: all companion Bash tests, VoiceInk unit tests, and app build PASS.
@@ -617,7 +625,7 @@ Wait for the exact `green-task4` run. Expected: all companion Bash tests, VoiceI
 ### Task 5: GitHub Verification, Installed-App E2E, and Operator Documentation
 
 **Files:**
-- Modify: `.github/workflows/test-inbox-companion.yml`
+- Modify: `.github/workflows/build-local-app.yml`
 - Create: `tests/inbox-companion-e2e.sh`
 - Create: `docs/inbox-transcription-companion.md`
 - Create: `docs/superpowers/specs/2026-07-30-inbox-transcription-companion-bridge-justification.md`
@@ -629,13 +637,17 @@ Wait for the exact `green-task4` run. Expected: all companion Bash tests, VoiceI
 
 - [ ] **Step 1: Extend the CI workflow**
 
-Extend the manual workflow on `macos-26` so its existing steps are followed by:
+Add a second opt-in input:
 
 ```yaml
-- run: bash tests/inbox-companion-e2e.sh
+run_companion_e2e:
+  description: Run installed-app inbox companion E2E
+  required: false
+  default: false
+  type: boolean
 ```
 
-Use `permissions: contents: read`. Upload only `.xcresult` on failure; never upload request directories, prompt contents, audio, transcript, defaults, Keychain data, or app support stores.
+After the existing app build, add a `bash tests/inbox-companion-e2e.sh` step guarded by `${{ inputs.run_companion_e2e }}`. Keep `permissions: contents: read`. Upload only `.xcresult` on failure; never upload request directories, prompt contents, audio, transcript, defaults, Keychain data, or app support stores.
 
 - [ ] **Step 2: Add the exact Xcode test target**
 
@@ -693,7 +705,7 @@ The bridge justification must record verified constraints:
 - [ ] **Step 5: Commit verification support**
 
 ```bash
-git add .github/workflows/test-inbox-companion.yml \
+git add .github/workflows/build-local-app.yml \
   tests/inbox-companion-e2e.sh \
   docs/inbox-transcription-companion.md \
   docs/superpowers/specs/2026-07-30-inbox-transcription-companion-bridge-justification.md \
@@ -715,10 +727,12 @@ git diff --check
 Push the current feature branch, then dispatch:
 
 ```bash
-gh workflow run test-inbox-companion.yml \
+gh workflow run build-local-app.yml \
   --repo sizzle1102/VoiceInk \
   --ref codex/inbox-transcription-companion \
-  -f request_id=inbox-companion-$(date -u +%Y%m%dT%H%M%SZ)
+  -f request_id=inbox-companion-$(date -u +%Y%m%dT%H%M%SZ) \
+  -f run_companion_tests=true \
+  -f run_companion_e2e=true
 ```
 
 Wait for completion and inspect the exact run. Expected: Bash tests, Swift tests, app build, and installed-app E2E all PASS.
@@ -775,7 +789,7 @@ Remote:
 
 ```bash
 RUN_ID="$(gh run list --repo sizzle1102/VoiceInk \
-  --workflow test-inbox-companion.yml \
+  --workflow build-local-app.yml \
   --branch codex/inbox-transcription-companion \
   --limit 1 --json databaseId --jq '.[0].databaseId')"
 gh run view "$RUN_ID" --repo sizzle1102/VoiceInk --log-failed
