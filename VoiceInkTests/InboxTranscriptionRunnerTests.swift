@@ -23,11 +23,20 @@ struct InboxTranscriptionRunnerTests {
 
     @Test func runnerCompletesBackendCleanupBeforeReturningResponse() async throws {
         let fixture = try makeFixture()
-        let backend = FakeBackend(result: .success("Hello."))
+        let backend = FakeBackend(result: .success("Hello."), blocksCleanup: true)
         let runner = InboxTranscriptionRunner(audioPreparer: FakeAudioPreparer(), backend: backend, modelContext: fixture.modelContext)
+        var completedResponse: InboxCompanionResponse?
 
-        _ = await runner.run(request: fixture.request, snapshot: fixture.snapshot, cancellation: TranscriptionCancellationToken())
+        let task = Task { @MainActor in
+            completedResponse = await runner.run(request: fixture.request, snapshot: fixture.snapshot, cancellation: TranscriptionCancellationToken())
+        }
+        await backend.waitForCleanupStart()
 
+        #expect(backend.cleanupStarted)
+        #expect(completedResponse == nil)
+        backend.releaseCleanup()
+        await task.value
+        #expect(completedResponse?.status == .success)
         #expect(backend.didCleanup)
     }
 
@@ -163,17 +172,40 @@ private final class FakeAudioPreparer: InboxAudioPreparing {
 @MainActor
 private final class FakeBackend: InboxTranscriptionBackend {
     let result: Result<String, Error>
+    private let blocksCleanup: Bool
     private(set) var didCleanup = false
+    private(set) var cleanupStarted = false
+    private var cleanupContinuation: CheckedContinuation<Void, Never>?
+    private var cleanupStartContinuation: CheckedContinuation<Void, Never>?
 
-    init(result: Result<String, Error>) {
+    init(result: Result<String, Error>, blocksCleanup: Bool = false) {
         self.result = result
+        self.blocksCleanup = blocksCleanup
     }
 
     func transcribe(wavURL: URL, model: any TranscriptionModel, context: TranscriptionRequestContext) async throws -> String {
         try result.get()
     }
 
-    func cleanup() async { didCleanup = true }
+    func cleanup() async {
+        cleanupStarted = true
+        cleanupStartContinuation?.resume()
+        cleanupStartContinuation = nil
+        if blocksCleanup {
+            await withCheckedContinuation { cleanupContinuation = $0 }
+        }
+        didCleanup = true
+    }
+
+    func releaseCleanup() {
+        cleanupContinuation?.resume()
+        cleanupContinuation = nil
+    }
+
+    func waitForCleanupStart() async {
+        if cleanupStarted { return }
+        await withCheckedContinuation { cleanupStartContinuation = $0 }
+    }
 }
 
 private enum TestError: Error {
