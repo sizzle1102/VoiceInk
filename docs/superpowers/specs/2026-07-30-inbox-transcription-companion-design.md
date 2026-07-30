@@ -16,9 +16,11 @@ Allow an automation agent processing a KnowledgeBase inbox to transcribe an
 audio attachment without requiring the user to open VoiceInk, press **Start**,
 copy a result, or issue a separate transcription command.
 
-The companion must reuse VoiceInk as the canonical source of transcription
-configuration and capability. It must not create a second place to configure
-models, languages, provider credentials, or local model locations.
+Except for the static companion prompt defined below, the companion must reuse
+VoiceInk as the canonical source of transcription configuration and capability.
+It must not create a second place to configure models, languages, provider
+credentials, local model locations, formatting, vocabulary, or word
+replacements.
 
 The transcript is temporary inbox content. It is not a new archival record and
 must not be retained by the companion or added to VoiceInk History.
@@ -55,8 +57,6 @@ VoiceInk rather than use a copied or cached configuration. It must use:
 
 - the transcription model selected by the mode;
 - the mode's selected language;
-- model-specific transcription context such as a Whisper prompt when
-  applicable;
 - the same deterministic, non-AI cleanup that VoiceInk applies to file
   transcription, including enabled text formatting and configured word
   replacements.
@@ -69,10 +69,34 @@ The companion must support every model that the installed VoiceInk version can
 use successfully in its own non-realtime **Transcribe Audio** flow. It must not
 maintain a separate provider allowlist.
 
-When the user changes the `Inbox` mode, selected model, language, prompt,
-formatting, vocabulary, word replacements, local model installation, or
-provider credential in VoiceInk, the next companion invocation must use the
-new effective configuration without separate companion setup.
+When the user changes the `Inbox` mode, selected model, language, formatting,
+vocabulary, word replacements, local model installation, or provider credential
+in VoiceInk, the next companion invocation must use the new effective
+configuration without separate companion setup.
+
+## Static companion prompt
+
+The companion must read its transcription prompt from one version-controlled
+UTF-8 text file. The file is the only companion-owned transcription setting and
+the only permitted override of VoiceInk's effective non-realtime file
+transcription request configuration. Its location and packaging are
+implementation choices.
+
+The companion must read the prompt file at the start of every request rather
+than cache its contents. A missing, unreadable, or invalid UTF-8 prompt file must
+produce a configuration error before transcription starts. Replacing the file
+must affect the next request without changing VoiceInk, reconfiguring the
+companion, or restarting a persistent companion component.
+
+When the selected model's non-realtime transcription API accepts a prompt, the
+companion must pass the file contents as that prompt. When the selected model
+does not accept a prompt, the companion must continue with that model and report
+that the prompt was not applied; it must not switch model or provider to obtain
+prompt support.
+
+The companion must not copy VoiceInk's own transcription prompt, modify it, or
+require it to match the companion prompt. The prompt file must not contain
+credentials, personal inbox content, or other secrets.
 
 ## Invocation and result
 
@@ -91,15 +115,17 @@ The successful result must expose, in a machine-readable form:
 - the resolved language;
 - the media duration;
 - whether execution used a local or cloud provider;
+- whether the static companion prompt was applied and a non-reversible digest or
+  version identifying the prompt contents resolved for the request;
 - whether AI enhancement was applied, which must be `false`.
 
 The exact serialization, transport, and command surface are implementation
 choices. Human-readable diagnostics may accompany the machine-readable result
 but must not make it ambiguous.
 
-The companion must never include credentials, credential identifiers, complete
-VoiceInk configuration dumps, or unrelated transcription history in its
-result.
+The companion must never include credentials, credential identifiers, the
+static prompt contents, complete VoiceInk configuration dumps, or unrelated
+transcription history in its result.
 
 ## Data handling and side effects
 
@@ -181,6 +207,7 @@ The companion must fail before starting transcription when:
 - the `Inbox` mode has AI enhancement enabled;
 - the selected transcription model is missing, unavailable, or unsupported for
   file transcription;
+- the static companion prompt file is missing, unreadable, or invalid UTF-8;
 - a required local model is absent;
 - a required provider credential is absent or inaccessible;
 - the input media type is unsupported or unreadable;
@@ -233,17 +260,20 @@ The implementation is ready when all of the following are demonstrated:
 
 1. A representative Russian M4A file is transcribed non-interactively through
    the enabled `Inbox` mode.
-2. For the same input and configuration, the returned text matches the raw
-   result of VoiceInk's **Transcribe Audio** flow after its deterministic
-   non-AI cleanup.
+2. The selected model and provider use the same non-realtime transcription path
+   as VoiceInk's **Transcribe Audio** flow. The static companion prompt is the
+   only permitted request-level difference; given the same raw model or provider
+   output, the returned text exactly matches VoiceInk's deterministic non-AI
+   cleanup.
 3. Changing the `Inbox` mode's usable transcription model in VoiceInk changes
    the model used by the next request without companion reconfiguration.
-4. Changing applicable language, prompt, formatting, vocabulary, or word
-   replacements in VoiceInk is reflected in the next request.
+4. Changing applicable language, formatting, vocabulary, or word replacements
+   in VoiceInk, or replacing the static companion prompt file, is reflected in
+   the next request.
 5. Missing, duplicate, disabled, AI-enhanced, or otherwise invalid `Inbox`
    modes produce distinct configuration failures.
-6. Missing models and missing or invalid credentials produce explicit failures
-   without fallback.
+6. A missing or invalid prompt file, missing models, and missing or invalid
+   credentials produce explicit failures without fallback.
 7. A cloud-model request contacts only the provider configured by the `Inbox`
    mode.
 8. The input file's checksum is unchanged after success, failure,
