@@ -153,15 +153,23 @@ with open(request["responsePath"], "w", encoding="utf-8") as response_file:
 PY
 FAKE_OPEN
   chmod +x "$CASE_DIR/bin/fake-open"
+
+  cat > "$CASE_DIR/bin/failing-open" <<'FAILING_OPEN'
+#!/usr/bin/env bash
+echo 'launch diagnostic that must not reach CLI stderr' >&2
+exit 42
+FAILING_OPEN
+  chmod +x "$CASE_DIR/bin/failing-open"
 }
 
 run_cli() {
   local stdout_path="$1"
   local stderr_path="$2"
   shift 2
+  local open_command="${VOICEINK_TEST_OPEN_COMMAND:-$CASE_DIR/bin/fake-open}"
 
   TMPDIR="$CASE_DIR/tmp" \
-    VOICEINK_COMPANION_OPEN_COMMAND="$CASE_DIR/bin/fake-open" \
+    VOICEINK_COMPANION_OPEN_COMMAND="$open_command" \
     VOICEINK_FAKE_OPEN_LOG="$FAKE_OPEN_LOG" \
     VOICEINK_FAKE_CANCEL_OBSERVED="$CASE_DIR/cancel-observed.txt" \
     VOICEINK_FAKE_EXPECTED_INPUT="$INPUT_PATH" \
@@ -176,6 +184,21 @@ assert_failure_code() {
   assert_equal "failure" "$(json_value "$output" status)" "failure status"
   assert_equal "$expected_code" "$(json_value "$output" error.code)" "failure code"
   assert_equal "1" "$(json_value "$output" contractVersion)" "failure contract version"
+}
+
+assert_response_has_uuid_request_id() {
+  local output="$1"
+
+  /usr/bin/python3 - "$output" >/dev/null 2>&1 <<'PY' || fail "response did not decode with a UUID request ID"
+import json
+import sys
+import uuid
+
+with open(sys.argv[1], encoding="utf-8") as response_file:
+    response = json.load(response_file)
+
+uuid.UUID(response["requestId"])
+PY
 }
 
 run_success_case() {
@@ -295,7 +318,55 @@ run_request_id_association_case() {
   echo 'PASS: request ID association'
 }
 
+run_invalid_request_id_case() {
+  prepare_case
+  local stdout_path="$CASE_DIR/stdout.json"
+  local stderr_path="$CASE_DIR/stderr.txt"
+
+  if run_cli "$stdout_path" "$stderr_path" --request-id not-a-uuid "$INPUT_PATH"; then
+    fail "invalid request ID invocation unexpectedly succeeded"
+  fi
+
+  [[ ! -s "$stderr_path" ]] || fail "invalid request ID wrote stderr"
+  assert_failure_code "$stdout_path" "invalid_invocation"
+  assert_response_has_uuid_request_id "$stdout_path"
+  echo 'PASS: invalid request ID response UUID'
+}
+
+run_launch_failure_case() {
+  prepare_case
+  local stdout_path="$CASE_DIR/stdout.json"
+  local stderr_path="$CASE_DIR/stderr.txt"
+
+  if VOICEINK_TEST_OPEN_COMMAND="$CASE_DIR/bin/failing-open" run_cli "$stdout_path" "$stderr_path" "$INPUT_PATH"; then
+    fail "launch failure invocation unexpectedly succeeded"
+  fi
+
+  [[ ! -s "$stderr_path" ]] || fail "launch failure leaked stderr instead of returning JSON envelope"
+  assert_failure_code "$stdout_path" "voiceink_unavailable"
+  echo 'PASS: launch failure envelope'
+}
+
+run_requested_case() {
+  case "$1" in
+    invalid-request-id)
+      run_invalid_request_id_case
+      ;;
+    launch-failure)
+      run_launch_failure_case
+      ;;
+    *)
+      fail "unknown focused test case: $1"
+      ;;
+  esac
+}
+
 require_cli
+if [[ -n "${VOICEINK_COMPANION_TEST_CASE:-}" ]]; then
+  run_requested_case "$VOICEINK_COMPANION_TEST_CASE"
+  exit 0
+fi
+
 run_success_case
 run_missing_input_case
 run_missing_prompt_case
@@ -304,5 +375,7 @@ run_timeout_case
 run_input_checksum_case
 run_request_directory_cleanup_case
 run_request_id_association_case
+run_invalid_request_id_case
+run_launch_failure_case
 
 echo 'inbox companion CLI tests passed'

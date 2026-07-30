@@ -157,6 +157,7 @@ fi
 
 uuid_pattern='^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$'
 if [[ ! "$request_id" =~ $uuid_pattern ]]; then
+  request_id="$(/usr/bin/uuidgen | tr '[:upper:]' '[:lower:]')"
   emit_failure "$request_id" invalid_invocation invocation 'The request ID must be a UUID.' false
   exit 2
 fi
@@ -225,7 +226,10 @@ rm -f "$request_plist"
 
 open_command="${VOICEINK_COMPANION_OPEN_COMMAND:-/usr/bin/open}"
 invocation_url="$contract_scheme://$contract_host?request=$(url_encode "$request_json")"
-"$open_command" -gj -a "${VOICEINK_COMPANION_APP:-VoiceInk}" "$invocation_url"
+if ! "$open_command" -gj -a "${VOICEINK_COMPANION_APP:-VoiceInk}" "$invocation_url" >/dev/null 2>&1; then
+  emit_failure "$request_id" voiceink_unavailable launch 'VoiceInk could not be launched.' false
+  exit 1
+fi
 
 deadline=$(( $(/bin/date +%s) + timeout_seconds ))
 while [[ ! -f "$response_path" ]]; do
