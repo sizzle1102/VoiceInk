@@ -3,6 +3,7 @@ import OSLog
 import SwiftUI
 import UniformTypeIdentifiers
 
+@MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
     private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "MenuBarWindowFlow")
 
@@ -43,8 +44,30 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // Stash URL when app cold-starts to avoid spawning a new window/tab
     var pendingOpenFileURL: URL?
+    private var inboxCompanionBridge: InboxCompanionBridge?
+    private var pendingInboxCompanionURLs: [URL] = []
+
+    func configureInboxCompanionBridge(_ bridge: InboxCompanionBridge) {
+        inboxCompanionBridge = bridge
+        let pendingURLs = pendingInboxCompanionURLs
+        pendingInboxCompanionURLs.removeAll()
+        pendingURLs.forEach(bridge.handle)
+    }
 
     func application(_ application: NSApplication, open urls: [URL]) {
+        let companionURLs = urls.filter(InboxCompanionBridge.isCompanionURL)
+        if !companionURLs.isEmpty {
+            if let inboxCompanionBridge {
+                companionURLs.forEach(inboxCompanionBridge.handle)
+            } else {
+                pendingInboxCompanionURLs.append(contentsOf: companionURLs)
+                if pendingInboxCompanionURLs.count > 8 {
+                    pendingInboxCompanionURLs.removeFirst(pendingInboxCompanionURLs.count - 8)
+                }
+            }
+            return
+        }
+
         logger.notice(
             "🧭 Application received open-URLs request. urlCount=\(urls.count, privacy: .public); hasCurrentMainWindow=\((WindowManager.shared.currentMainWindow() != nil), privacy: .public); activationPolicy=\(WindowDiagnostics.activationPolicyDescription(application.activationPolicy()), privacy: .public); snapshot=\(WindowDiagnostics.windowSnapshot(), privacy: .public)"
         )

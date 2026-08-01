@@ -48,5 +48,16 @@
 			</array>
 		</dict>
 	</array>
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.prakashjoshipax.VoiceInk.InboxCompanion</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>voiceink-inbox</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>
