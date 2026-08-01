@@ -206,6 +206,34 @@ struct InboxCompanionBridgeTests {
         _ = try await waitForResponse(at: first.responseURL)
     }
 
+    @Test func promptIsRereadFromTheAnchorOnEveryRequest() async throws {
+        let recorder = PromptRecorder()
+        let first = try makeRequest()
+        let prompt = Self.trustedCompanionDirectory.appendingPathComponent("inbox-transcription-prompt.txt")
+        let bridge = makeBridge(
+            runner: FakeRunner(response: successResponse(for: first.request)),
+            snapshotResolver: { _, promptData in
+                recorder.observed.append(promptData)
+                return snapshot()
+            }
+        )
+        bridge.handle(invocationURL(for: first.requestURL))
+        _ = try await waitForResponse(at: first.responseURL)
+
+        let replacement = Data("replaced companion prompt".utf8)
+        try replacement.write(to: prompt)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: prompt.path)
+
+        // Passing the prompt URL keeps makeRequest from reseeding the anchor.
+        let second = try makeRequest(promptURL: prompt)
+        bridge.handle(invocationURL(for: second.requestURL))
+        _ = try await waitForResponse(at: second.responseURL)
+
+        #expect(recorder.observed.count == 2)
+        #expect(recorder.observed.last == replacement)
+        #expect(recorder.observed.first != recorder.observed.last)
+    }
+
     @Test func bridgeDoesNotPresentOrActivateVoiceInkUI() async throws {
         let fixture = try makeRequest()
         let bridge = makeBridge(runner: FakeRunner(response: successResponse(for: fixture.request)))
@@ -224,10 +252,14 @@ struct InboxCompanionBridgeTests {
         FileManager.default.temporaryDirectory.appendingPathComponent("voiceink-inbox-companion", isDirectory: true)
     }
 
-    private func makeBridge(runner: (any InboxTranscriptionRunning)? = nil, trustedDirectory: URL? = nil) -> InboxCompanionBridge {
+    private func makeBridge(
+        runner: (any InboxTranscriptionRunning)? = nil,
+        trustedDirectory: URL? = nil,
+        snapshotResolver: ((InboxCompanionRequest, Data) throws -> InboxCompanionRuntimeSnapshot)? = nil
+    ) -> InboxCompanionBridge {
         InboxCompanionBridge(
             runner: runner ?? FakeRunner(response: .failure(requestId: UUID(), error: InboxCompanionFailure(code: .internalFailure, phase: "test", message: "test", retryable: false))),
-            snapshotResolver: { _, _ in snapshot() },
+            snapshotResolver: snapshotResolver ?? { _, _ in snapshot() },
             trustedCompanionDirectoryURL: trustedDirectory ?? Self.trustedCompanionDirectory
         )
     }
@@ -333,3 +365,5 @@ private final class BlockingRunner: InboxTranscriptionRunning {
 
 @MainActor
 private final class MainWindowRequestObserver { var count = 0 }
+
+private final class PromptRecorder { var observed: [Data] = [] }

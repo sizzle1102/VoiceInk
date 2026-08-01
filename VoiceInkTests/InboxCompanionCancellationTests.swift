@@ -21,6 +21,7 @@ struct InboxCompanionCancellationTests {
         #expect(response.error?.code == .cancelled)
         #expect(response.error?.retryable == false)
         #expect(!FileManager.default.fileExists(atPath: fixture.wavURL.path))
+        #expect(try Data(contentsOf: fixture.inputURL) == fixture.inputBytes)
     }
 
     @Test func deadlineReturnsTimeoutAndRemovesTemporaryAudio() async throws {
@@ -36,6 +37,7 @@ struct InboxCompanionCancellationTests {
         #expect(response.error?.code == .timeout)
         #expect(response.error?.retryable == true)
         #expect(!FileManager.default.fileExists(atPath: fixture.wavURL.path))
+        #expect(try Data(contentsOf: fixture.inputURL) == fixture.inputBytes)
     }
 
     @Test func cancellationTokenIsVisibleAcrossThreads() async throws {
@@ -82,6 +84,8 @@ struct InboxCompanionCancellationTests {
         let responseURL: URL
         let cancellationURL: URL
         let wavURL: URL
+        let inputURL: URL
+        let inputBytes: Data
         let modelContext: ModelContext
     }
 
@@ -93,7 +97,8 @@ struct InboxCompanionCancellationTests {
         let directory = privateRoot.appendingPathComponent("request.\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let input = directory.appendingPathComponent("input.m4a")
-        try Data("original input bytes".utf8).write(to: input)
+        let inputBytes = Data("original input bytes".utf8)
+        try inputBytes.write(to: input)
         let responseURL = directory.appendingPathComponent("response.json")
         let request = InboxCompanionRequest(
             contractVersion: InboxCompanionContract.version,
@@ -113,6 +118,8 @@ struct InboxCompanionCancellationTests {
             responseURL: responseURL,
             cancellationURL: URL(fileURLWithPath: request.cancellationPath),
             wavURL: directory.appendingPathComponent("request-audio.wav"),
+            inputURL: input,
+            inputBytes: inputBytes,
             modelContext: ModelContext(container)
         )
     }
