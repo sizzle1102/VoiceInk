@@ -31,10 +31,15 @@ require_cli() {
 
 prepare_case() {
   CASE_DIR="$(mktemp -d "$TEST_ROOT/case.XXXXXX")"
-  mkdir -p "$CASE_DIR/Companion" "$CASE_DIR/bin" "$CASE_DIR/tmp"
+  mkdir -p "$CASE_DIR/Companion" "$CASE_DIR/bin" "$CASE_DIR/tmp" "$CASE_DIR/home"
   cp "$CLI_SOURCE" "$CASE_DIR/Companion/voiceink-inbox-transcribe"
   cp "$PROMPT_SOURCE" "$CASE_DIR/Companion/inbox-transcription-prompt.txt"
   chmod +x "$CASE_DIR/Companion/voiceink-inbox-transcribe"
+  # The bridge only trusts this fixed anchor, so every case runs under an isolated HOME.
+  CASE_HOME="$CASE_DIR/home"
+  ANCHOR_DIR="$CASE_HOME/Library/Application Support/VoiceInk/InboxCompanion"
+  ANCHOR_PROMPT="$ANCHOR_DIR/inbox-transcription-prompt.txt"
+  ANCHOR_CLI="$ANCHOR_DIR/voiceink-inbox-transcribe"
   INPUT_PATH="$CASE_DIR/input.m4a"
   printf 'audio bytes must stay outside the open invocation\n' > "$INPUT_PATH"
   FAKE_OPEN_LOG="$CASE_DIR/open.log"
@@ -118,6 +123,11 @@ if not request["responsePath"].endswith("/response.json"):
 if not request["cancellationPath"].endswith("/cancel"):
     raise SystemExit("unexpected cancellation path")
 
+observed_prompt = os.environ.get("VOICEINK_FAKE_PROMPT_OBSERVED")
+if observed_prompt:
+    with open(observed_prompt, "w", encoding="utf-8") as observed_file:
+        observed_file.write(request["promptPath"])
+
 response = {
     "contractVersion": 1,
     "requestId": request["requestId"],
@@ -155,13 +165,31 @@ run_cli() {
   shift 2
   local open_command="${VOICEINK_TEST_OPEN_COMMAND:-$CASE_DIR/bin/fake-open}"
 
-  TMPDIR="$CASE_DIR/tmp" \
+  local cli="${VOICEINK_TEST_CLI:-$CASE_DIR/Companion/voiceink-inbox-transcribe}"
+
+  HOME="$CASE_HOME" \
+    TMPDIR="$CASE_DIR/tmp" \
     VOICEINK_COMPANION_OPEN_COMMAND="$open_command" \
     VOICEINK_FAKE_OPEN_LOG="$FAKE_OPEN_LOG" \
     VOICEINK_FAKE_CANCEL_OBSERVED="$CASE_DIR/cancel-observed.txt" \
     VOICEINK_FAKE_EXPECTED_INPUT="$INPUT_PATH" \
-    VOICEINK_FAKE_EXPECTED_PROMPT="$CASE_DIR/Companion/inbox-transcription-prompt.txt" \
-    "$CASE_DIR/Companion/voiceink-inbox-transcribe" "$@" > "$stdout_path" 2> "$stderr_path"
+    VOICEINK_FAKE_EXPECTED_PROMPT="$ANCHOR_PROMPT" \
+    VOICEINK_FAKE_PROMPT_OBSERVED="$CASE_DIR/prompt-observed.txt" \
+    "$cli" "$@" > "$stdout_path" 2> "$stderr_path"
+}
+
+run_cli_expecting_success() {
+  local stdout_path="$1"
+  local stderr_path="$2"
+
+  # Without this, `set -e` aborts the whole suite with no diagnostic at all.
+  if ! run_cli "$@"; then
+    fail "invocation failed unexpectedly (stdout: $(cat "$stdout_path" 2>/dev/null), stderr: $(cat "$stderr_path" 2>/dev/null))"
+  fi
+}
+
+file_mode() {
+  /usr/bin/stat -f '%Lp' "$1"
 }
 
 assert_failure_code() {
@@ -193,7 +221,7 @@ run_success_case() {
   local stdout_path="$CASE_DIR/stdout.json"
   local stderr_path="$CASE_DIR/stderr.txt"
 
-  run_cli "$stdout_path" "$stderr_path" "$INPUT_PATH"
+  run_cli_expecting_success "$stdout_path" "$stderr_path" "$INPUT_PATH"
 
   [[ ! -s "$stderr_path" ]] || fail "success case wrote stderr"
   assert_equal "success" "$(json_value "$stdout_path" status)" "success status"
@@ -269,7 +297,7 @@ run_input_checksum_case() {
   local after
   before="$(shasum -a 256 "$INPUT_PATH" | awk '{print $1}')"
 
-  run_cli "$stdout_path" "$stderr_path" "$INPUT_PATH"
+  run_cli_expecting_success "$stdout_path" "$stderr_path" "$INPUT_PATH"
 
   after="$(shasum -a 256 "$INPUT_PATH" | awk '{print $1}')"
   assert_equal "$before" "$after" "input checksum"
@@ -281,7 +309,7 @@ run_request_directory_cleanup_case() {
   local stdout_path="$CASE_DIR/stdout.json"
   local stderr_path="$CASE_DIR/stderr.txt"
 
-  run_cli "$stdout_path" "$stderr_path" "$INPUT_PATH"
+  run_cli_expecting_success "$stdout_path" "$stderr_path" "$INPUT_PATH"
 
   if find "$CASE_DIR/tmp/voiceink-inbox-companion" -mindepth 1 -maxdepth 1 -type d -print -quit 2>/dev/null | grep -q .; then
     fail "request directory remains after CLI exit"
@@ -295,7 +323,7 @@ run_request_id_association_case() {
   local stderr_path="$CASE_DIR/stderr.txt"
   local request_id='11111111-2222-4333-8444-555555555555'
 
-  run_cli "$stdout_path" "$stderr_path" --request-id "$request_id" "$INPUT_PATH"
+  run_cli_expecting_success "$stdout_path" "$stderr_path" --request-id "$request_id" "$INPUT_PATH"
 
   assert_equal "$request_id" "$(json_value "$stdout_path" requestId)" "response request ID"
   echo 'PASS: request ID association'
@@ -330,6 +358,60 @@ run_launch_failure_case() {
   echo 'PASS: launch failure envelope'
 }
 
+run_prompt_anchor_case() {
+  prepare_case
+  local stdout_path="$CASE_DIR/stdout.json"
+  local stderr_path="$CASE_DIR/stderr.txt"
+
+  run_cli_expecting_success "$stdout_path" "$stderr_path" "$INPUT_PATH"
+
+  assert_equal "success" "$(json_value "$stdout_path" status)" "anchored success status"
+  assert_equal "$ANCHOR_PROMPT" "$(cat "$CASE_DIR/prompt-observed.txt")" "request prompt path anchor"
+  [[ -f "$ANCHOR_CLI" && -x "$ANCHOR_CLI" ]] || fail "anchor is missing the executable the bridge requires"
+  cmp -s "$CLI_SOURCE" "$ANCHOR_CLI" || fail "installed anchor CLI differs from the repository CLI"
+  cmp -s "$PROMPT_SOURCE" "$ANCHOR_PROMPT" || fail "installed anchor prompt differs from the repository prompt"
+  assert_equal "700" "$(file_mode "$ANCHOR_DIR")" "anchor directory mode"
+  assert_equal "700" "$(file_mode "$ANCHOR_CLI")" "anchor CLI mode"
+  assert_equal "600" "$(file_mode "$ANCHOR_PROMPT")" "anchor prompt mode"
+  echo 'PASS: prompt anchor installation'
+}
+
+run_prompt_anchor_preserves_user_edit_case() {
+  prepare_case
+  local stdout_path="$CASE_DIR/stdout.json"
+  local stderr_path="$CASE_DIR/stderr.txt"
+  local edited='Отредактированный пользователем контекст.'
+
+  run_cli_expecting_success "$stdout_path" "$stderr_path" "$INPUT_PATH"
+  assert_equal "success" "$(json_value "$stdout_path" status)" "first anchored run status"
+
+  printf '%s\n' "$edited" > "$ANCHOR_PROMPT"
+  run_cli_expecting_success "$stdout_path" "$stderr_path" "$INPUT_PATH"
+
+  assert_equal "success" "$(json_value "$stdout_path" status)" "second anchored run status"
+  assert_equal "$edited" "$(cat "$ANCHOR_PROMPT")" "anchor prompt survives a rerun"
+  assert_equal "$ANCHOR_PROMPT" "$(cat "$CASE_DIR/prompt-observed.txt")" "rerun prompt path anchor"
+  echo 'PASS: prompt anchor preserves user edit'
+}
+
+run_symlinked_anchor_case() {
+  prepare_case
+  local stdout_path="$CASE_DIR/stdout.json"
+  local stderr_path="$CASE_DIR/stderr.txt"
+
+  mkdir -p "$CASE_HOME/Library/Application Support" "$CASE_DIR/elsewhere"
+  ln -s "$CASE_DIR/elsewhere" "$CASE_HOME/Library/Application Support/VoiceInk"
+
+  if run_cli "$stdout_path" "$stderr_path" "$INPUT_PATH"; then
+    fail "symlinked anchor invocation unexpectedly succeeded"
+  fi
+
+  [[ ! -s "$stderr_path" ]] || fail "symlinked anchor leaked stderr instead of returning JSON envelope"
+  assert_failure_code "$stdout_path" "internal_failure"
+  [[ ! -e "$FAKE_OPEN_LOG" ]] || fail "symlinked anchor invoked fake open"
+  echo 'PASS: symlinked anchor rejected'
+}
+
 run_requested_case() {
   case "$1" in
     invalid-request-id)
@@ -360,5 +442,8 @@ run_request_directory_cleanup_case
 run_request_id_association_case
 run_invalid_request_id_case
 run_launch_failure_case
+run_prompt_anchor_case
+run_prompt_anchor_preserves_user_edit_case
+run_symlinked_anchor_case
 
 echo 'inbox companion CLI tests passed'

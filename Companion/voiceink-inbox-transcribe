@@ -6,7 +6,9 @@ contract_version=1
 contract_scheme='voiceink-inbox'
 contract_host='transcribe'
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-prompt_path="$script_dir/inbox-transcription-prompt.txt"
+script_path="$script_dir/$(basename "${BASH_SOURCE[0]}")"
+source_prompt_path="$script_dir/inbox-transcription-prompt.txt"
+prompt_path=''
 request_directory=''
 
 write_empty_plist() {
@@ -106,6 +108,51 @@ absolute_path() {
   fi
 }
 
+# VoiceInk trusts exactly one companion directory, so the CLI installs itself and the
+# prompt there instead of asking the app to read files next to this script.
+anchor_directory() {
+  printf '%s/Library/Application Support/VoiceInk/InboxCompanion' "${HOME%/}"
+}
+
+install_anchor_file() {
+  local source="$1"
+  local destination="$2"
+  local mode="$3"
+  local staged
+
+  staged="$(mktemp "$(dirname "$destination")/.install.XXXXXX")" || return 1
+  if cat "$source" > "$staged" && chmod "$mode" "$staged" && mv -f "$staged" "$destination"; then
+    return 0
+  fi
+  rm -f "$staged"
+  return 1
+}
+
+install_anchor() {
+  local anchor="$1"
+  local resolved
+
+  mkdir -p "$anchor" || return 1
+
+  # The app resolves the whole anchor path, so any symlinked component is a trust failure.
+  # This runs before chmod so a symlinked anchor never redirects the mode change.
+  resolved="$(cd "$anchor" && pwd -P)" || return 1
+  [[ "$resolved" == "$anchor" ]] || return 1
+
+  chmod 0700 "$anchor" || return 1
+
+  if [[ "$script_dir" != "$anchor" ]]; then
+    install_anchor_file "$script_path" "$anchor/voiceink-inbox-transcribe" 0700 || return 1
+  fi
+
+  # An edited installed prompt is authoritative; only seed it when it is absent.
+  if [[ ! -e "$anchor/inbox-transcription-prompt.txt" && -f "$source_prompt_path" ]]; then
+    install_anchor_file "$source_prompt_path" "$anchor/inbox-transcription-prompt.txt" 0600 || return 1
+  fi
+
+  return 0
+}
+
 request_id=''
 timeout_seconds=300
 input_argument=''
@@ -187,6 +234,18 @@ if [[ ! -r "$input_path" ]]; then
   emit_failure "$request_id" input_unreadable validation 'The input file is not readable.' false
   exit 1
 fi
+
+if [[ -z "${HOME:-}" ]]; then
+  emit_failure "$request_id" internal_failure installation 'HOME must be set to locate the companion support directory.' false
+  exit 1
+fi
+
+companion_anchor="$(anchor_directory)"
+if ! install_anchor "$companion_anchor"; then
+  emit_failure "$request_id" internal_failure installation 'The companion support directory could not be prepared.' false
+  exit 1
+fi
+prompt_path="$companion_anchor/inbox-transcription-prompt.txt"
 
 if [[ ! -e "$prompt_path" ]]; then
   emit_failure "$request_id" prompt_missing validation 'The companion prompt does not exist.' false

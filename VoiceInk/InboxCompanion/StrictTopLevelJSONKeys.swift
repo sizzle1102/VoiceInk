@@ -27,45 +27,19 @@ struct StrictTopLevelJSONKeys {
         }
     }
 
+    // Every value in the version-1 request schema is a scalar, so nested containers are
+    // rejected outright. That keeps this scanner iterative and denies a deeply nested
+    // payload any way to exhaust the stack before the schema is validated.
     private mutating func parseValue() -> Bool {
         skipWhitespace()
         guard index < bytes.count else { return false }
         switch bytes[index] {
         case 0x22: return parseString() != nil
-        case 0x7B: return parseObject()
-        case 0x5B: return parseArray()
+        case 0x7B, 0x5B: return false
         case 0x74: return consumeLiteral([0x74, 0x72, 0x75, 0x65])
         case 0x66: return consumeLiteral([0x66, 0x61, 0x6C, 0x73, 0x65])
         case 0x6E: return consumeLiteral([0x6E, 0x75, 0x6C, 0x6C])
         default: return parseNumber()
-        }
-    }
-
-    private mutating func parseObject() -> Bool {
-        guard consume(0x7B) else { return false }
-        skipWhitespace()
-        if consume(0x7D) { return true }
-        while true {
-            guard parseString() != nil else { return false }
-            skipWhitespace()
-            guard consume(0x3A), parseValue() else { return false }
-            skipWhitespace()
-            if consume(0x7D) { return true }
-            guard consume(0x2C) else { return false }
-            skipWhitespace()
-        }
-    }
-
-    private mutating func parseArray() -> Bool {
-        guard consume(0x5B) else { return false }
-        skipWhitespace()
-        if consume(0x5D) { return true }
-        while true {
-            guard parseValue() else { return false }
-            skipWhitespace()
-            if consume(0x5D) { return true }
-            guard consume(0x2C) else { return false }
-            skipWhitespace()
         }
     }
 

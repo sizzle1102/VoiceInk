@@ -112,6 +112,23 @@ struct InboxCompanionBridgeTests {
         #expect(!FileManager.default.fileExists(atPath: fixture.responseURL.path))
     }
 
+    @Test func deeplyNestedRequestValueIsRejected() async throws {
+        let fixture = try makeRequest()
+        let depth = 30_000
+        var payload = Data("{\"contractVersion\":".utf8)
+        payload.append(Data(repeating: 0x5B, count: depth))
+        payload.append(Data(repeating: 0x5D, count: depth))
+        payload.append(Data("}".utf8))
+        #expect(payload.count <= 64 * 1024)
+        try payload.write(to: fixture.requestURL)
+        let runner = FakeRunner(response: successResponse(for: fixture.request))
+        let bridge = makeBridge(runner: runner)
+        bridge.handle(invocationURL(for: fixture.requestURL))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(!runner.didRun)
+        #expect(!FileManager.default.fileExists(atPath: fixture.responseURL.path))
+    }
+
     @Test func mismatchedPromptPathProducesAssociatedFailure() async throws {
         let fixture = try makeRequest(promptURL: privateRoot.appendingPathComponent("other-prompt.txt"))
         try Data("test".utf8).write(to: URL(fileURLWithPath: fixture.request.promptPath))
