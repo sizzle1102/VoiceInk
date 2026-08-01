@@ -309,3 +309,9 @@ while [[ ! -f "$response_path" ]]; do
 done
 
 cat "$response_path"
+
+# Locally detected failures already exit non-zero. A failure VoiceInk itself reported must too,
+# so a shell caller never has to parse the envelope just to learn the request did not succeed.
+if [[ "$(/usr/bin/plutil -extract status raw -o - "$response_path" 2>/dev/null)" != 'success' ]]; then
+  exit 1
+fi

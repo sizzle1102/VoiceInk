@@ -21,7 +21,9 @@ MODEL_NAME='ggml-tiny'
 MODEL_FILE="$MODELS/$MODEL_NAME.bin"
 MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$MODEL_NAME.bin"
 MODE_KEY='modeConfigurationsV2'
-REQUEST_TIMEOUT=240
+# The app prewarms the model on launch, which competes with the first request; the observed
+# cold-start cost was ~170s on a CI runner, so keep a wide margin.
+REQUEST_TIMEOUT=600
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/voiceink-inbox-e2e.XXXXXX")"
 MODEL_WAS_PRESENT=0

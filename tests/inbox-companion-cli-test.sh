@@ -72,6 +72,29 @@ case "${VOICEINK_FAKE_OPEN_MODE:-success}" in
     ln -s "$VOICEINK_FAKE_CANCEL_OBSERVED" "$cancellation_path"
     exit 0
     ;;
+  app-failure)
+    response_path="$(/usr/bin/plutil -extract responsePath raw -o - "$request_path")"
+    request_id="$(/usr/bin/plutil -extract requestId raw -o - "$request_path")"
+    /usr/bin/python3 - "$response_path" "$request_id" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], "w", encoding="utf-8") as response_file:
+    json.dump({
+        "contractVersion": 1,
+        "requestId": sys.argv[2],
+        "status": "failure",
+        "result": None,
+        "error": {
+            "code": "inbox_mode_duplicate",
+            "phase": "preflight",
+            "message": "Inbox companion request failed.",
+            "retryable": False,
+        },
+    }, response_file)
+PY
+    exit 0
+    ;;
   success)
     ;;
   *)
@@ -410,6 +433,21 @@ run_trailing_slash_tmpdir_case() {
   echo 'PASS: trailing slash TMPDIR'
 }
 
+run_app_failure_exit_status_case() {
+  prepare_case
+  local stdout_path="$CASE_DIR/stdout.json"
+  local stderr_path="$CASE_DIR/stderr.txt"
+
+  # A failure VoiceInk reported must not look like success to a shell caller.
+  if VOICEINK_FAKE_OPEN_MODE=app-failure run_cli "$stdout_path" "$stderr_path" "$INPUT_PATH"; then
+    fail "app-reported failure exited zero: $(cat "$stdout_path")"
+  fi
+
+  [[ ! -s "$stderr_path" ]] || fail "app-reported failure wrote stderr"
+  assert_failure_code "$stdout_path" "inbox_mode_duplicate"
+  echo 'PASS: app-reported failure exit status'
+}
+
 run_symlinked_anchor_case() {
   prepare_case
   local stdout_path="$CASE_DIR/stdout.json"
@@ -461,6 +499,7 @@ run_launch_failure_case
 run_prompt_anchor_case
 run_prompt_anchor_preserves_user_edit_case
 run_trailing_slash_tmpdir_case
+run_app_failure_exit_status_case
 run_symlinked_anchor_case
 
 echo 'inbox companion CLI tests passed'
