@@ -170,11 +170,12 @@ struct VoiceInkApp: App {
         appDelegate.configureInboxCompanionBridge(
             InboxCompanionBridge(
                 runner: inboxCompanionRunner,
-                snapshotResolver: { request in
+                snapshotResolver: { request, promptData in
                     try InboxCompanionPreflight.resolve(
                         request: request,
                         modes: ModeManager.shared.configurations,
-                        transcriptionModelManager: transcriptionModelManager
+                        transcriptionModelManager: transcriptionModelManager,
+                        promptData: promptData
                     )
                 }
             )

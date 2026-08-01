@@ -55,24 +55,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
-        let companionURLs = urls.filter(InboxCompanionBridge.isCompanionURL)
+        let partition = Self.partitionOpenURLs(urls)
+        let companionURLs = partition.companion
         if !companionURLs.isEmpty {
             if let inboxCompanionBridge {
                 companionURLs.forEach(inboxCompanionBridge.handle)
             } else {
                 pendingInboxCompanionURLs.append(contentsOf: companionURLs)
-                if pendingInboxCompanionURLs.count > 8 {
-                    pendingInboxCompanionURLs.removeFirst(pendingInboxCompanionURLs.count - 8)
-                }
             }
-            return
         }
 
+        let remainingURLs = partition.remaining
+        guard !remainingURLs.isEmpty else { return }
+
         logger.notice(
-            "🧭 Application received open-URLs request. urlCount=\(urls.count, privacy: .public); hasCurrentMainWindow=\((WindowManager.shared.currentMainWindow() != nil), privacy: .public); activationPolicy=\(WindowDiagnostics.activationPolicyDescription(application.activationPolicy()), privacy: .public); snapshot=\(WindowDiagnostics.windowSnapshot(), privacy: .public)"
+            "🧭 Application received open-URLs request. urlCount=\(remainingURLs.count, privacy: .public); hasCurrentMainWindow=\((WindowManager.shared.currentMainWindow() != nil), privacy: .public); activationPolicy=\(WindowDiagnostics.activationPolicyDescription(application.activationPolicy()), privacy: .public); snapshot=\(WindowDiagnostics.windowSnapshot(), privacy: .public)"
         )
 
-        guard let url = urls.first(where: { SupportedMedia.isSupported(url: $0) }) else {
+        guard let url = remainingURLs.first(where: { SupportedMedia.isSupported(url: $0) }) else {
             logger.notice("🧭 Open-URLs request ignored because no supported media URL was found.")
             return
         }
@@ -102,6 +102,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 name: .navigateToDestination, object: nil, userInfo: ["destination": "Transcribe Audio"])
             DispatchQueue.main.async {
                 NotificationCenter.default.post(name: .openFileForTranscription, object: nil, userInfo: ["url": url])
+            }
+        }
+    }
+
+    static func partitionOpenURLs(_ urls: [URL]) -> (companion: [URL], remaining: [URL]) {
+        urls.reduce(into: (companion: [URL](), remaining: [URL]())) { result, url in
+            if InboxCompanionBridge.isCompanionURL(url) {
+                result.companion.append(url)
+            } else {
+                result.remaining.append(url)
             }
         }
     }

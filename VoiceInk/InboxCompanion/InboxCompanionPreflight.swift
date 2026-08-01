@@ -39,15 +39,28 @@ enum InboxCompanionPreflightError: Error, Equatable {
 @MainActor
 enum InboxCompanionPreflight {
     static func resolve(request: InboxCompanionRequest, modes: [ModeConfig], transcriptionModelManager: TranscriptionModelManager) throws -> InboxCompanionRuntimeSnapshot {
+        try resolve(request: request, modes: modes, transcriptionModelManager: transcriptionModelManager, promptData: nil)
+    }
+
+    static func resolve(
+        request: InboxCompanionRequest,
+        modes: [ModeConfig],
+        transcriptionModelManager: TranscriptionModelManager,
+        promptData: Data?
+    ) throws -> InboxCompanionRuntimeSnapshot {
         guard request.contractVersion == InboxCompanionContract.version else { throw InboxCompanionPreflightError.incompatibleContract }
         let inputURL = URL(fileURLWithPath: request.inputPath)
         guard FileManager.default.fileExists(atPath: inputURL.path) else { throw InboxCompanionPreflightError.inputMissing }
         guard FileManager.default.isReadableFile(atPath: inputURL.path) else { throw InboxCompanionPreflightError.inputUnreadable }
-        let promptURL = URL(fileURLWithPath: request.promptPath)
-        guard FileManager.default.fileExists(atPath: promptURL.path) else { throw InboxCompanionPreflightError.promptMissing }
-        let promptData: Data
-        do { promptData = try Data(contentsOf: promptURL) } catch { throw InboxCompanionPreflightError.promptUnreadable }
-        guard let prompt = String(data: promptData, encoding: .utf8) else { throw InboxCompanionPreflightError.promptInvalidUTF8 }
+        let resolvedPromptData: Data
+        if let promptData {
+            resolvedPromptData = promptData
+        } else {
+            let promptURL = URL(fileURLWithPath: request.promptPath)
+            guard FileManager.default.fileExists(atPath: promptURL.path) else { throw InboxCompanionPreflightError.promptMissing }
+            do { resolvedPromptData = try Data(contentsOf: promptURL) } catch { throw InboxCompanionPreflightError.promptUnreadable }
+        }
+        guard let prompt = String(data: resolvedPromptData, encoding: .utf8) else { throw InboxCompanionPreflightError.promptInvalidUTF8 }
         let inboxModes = modes.filter { $0.name == "Inbox" }
         guard !inboxModes.isEmpty else { throw InboxCompanionPreflightError.inboxModeMissing }
         let enabledModes = inboxModes.filter(\.isEnabled)
@@ -66,7 +79,7 @@ enum InboxCompanionPreflight {
         case .noMode: throw InboxCompanionPreflightError.inboxModeMissing
         }
         guard hasCredential(for: transcription.model) else { throw InboxCompanionPreflightError.credentialMissing }
-        return InboxCompanionRuntimeSnapshot(mode: mode, transcription: transcription, formatting: ModeRuntimeResolver.transcriptionFormattingConfiguration(mode: mode), prompt: prompt, promptSHA256: SHA256.hash(data: promptData).map { String(format: "%02x", $0) }.joined(), promptApplied: transcription.model.provider == .whisper)
+        return InboxCompanionRuntimeSnapshot(mode: mode, transcription: transcription, formatting: ModeRuntimeResolver.transcriptionFormattingConfiguration(mode: mode), prompt: prompt, promptSHA256: SHA256.hash(data: resolvedPromptData).map { String(format: "%02x", $0) }.joined(), promptApplied: transcription.model.provider == .whisper)
     }
 
     private static func hasCredential(for model: any TranscriptionModel) -> Bool {

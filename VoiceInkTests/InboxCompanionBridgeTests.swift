@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import Testing
 
@@ -10,6 +11,14 @@ struct InboxCompanionBridgeTests {
         let bridge = makeBridge()
         #expect(!bridge.handles(URL(string: "https://example.com/transcribe")!))
         #expect(!bridge.handles(URL(string: "voiceink-inbox://other?request=/tmp/request.json")!))
+    }
+
+    @Test func mixedURLsPreserveNormalURLs() {
+        let companion = URL(string: "voiceink-inbox://transcribe?request=/tmp/request.json")!
+        let normal = URL(fileURLWithPath: "/tmp/recording.m4a")
+        let partition = AppDelegate.partitionOpenURLs([companion, normal])
+        #expect(partition.companion == [companion])
+        #expect(partition.remaining == [normal])
     }
 
     @Test func malformedInvocationProducesInvalidInvocationWhenRequestIdIsRecoverable() async throws {
@@ -49,7 +58,54 @@ struct InboxCompanionBridgeTests {
         bridge.handle(invocationURL(for: symlinkDirectory.appendingPathComponent("request.json")))
         try await Task.sleep(for: .milliseconds(50))
         #expect(!runner.didRun)
+    }
+
+    @Test func symlinkedRequestFileIsRejected() async throws {
+        let fixture = try makeRequest()
+        let target = fixture.requestURL.deletingLastPathComponent().appendingPathComponent("other.json")
+        try FileManager.default.copyItem(at: fixture.requestURL, to: target)
+        try FileManager.default.removeItem(at: fixture.requestURL)
+        try FileManager.default.createSymbolicLink(at: fixture.requestURL, withDestinationURL: target)
+        let runner = FakeRunner(response: successResponse(for: fixture.request))
+        let bridge = makeBridge(runner: runner)
+        bridge.handle(invocationURL(for: fixture.requestURL))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(!runner.didRun)
         #expect(!FileManager.default.fileExists(atPath: fixture.responseURL.path))
+    }
+
+    @Test func oversizedRequestIsRejected() async throws {
+        let fixture = try makeRequest()
+        try Data(repeating: 0x20, count: 64 * 1024 + 1).write(to: fixture.requestURL)
+        let runner = FakeRunner(response: successResponse(for: fixture.request))
+        let bridge = makeBridge(runner: runner)
+        bridge.handle(invocationURL(for: fixture.requestURL))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(!runner.didRun)
+        #expect(!FileManager.default.fileExists(atPath: fixture.responseURL.path))
+    }
+
+    @Test func surplusRequestKeysAreRejected() async throws {
+        let fixture = try makeRequest()
+        var object = try JSONSerialization.jsonObject(with: Data(contentsOf: fixture.requestURL)) as! [String: Any]
+        object["surplus"] = true
+        try JSONSerialization.data(withJSONObject: object).write(to: fixture.requestURL)
+        let runner = FakeRunner(response: successResponse(for: fixture.request))
+        let bridge = makeBridge(runner: runner)
+        bridge.handle(invocationURL(for: fixture.requestURL))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(!runner.didRun)
+        #expect(!FileManager.default.fileExists(atPath: fixture.responseURL.path))
+    }
+
+    @Test func nonStaticPromptPathIsRejected() async throws {
+        let fixture = try makeRequest(promptURL: privateRoot.appendingPathComponent("other-prompt.txt"))
+        try Data("test".utf8).write(to: URL(fileURLWithPath: fixture.request.promptPath))
+        let runner = FakeRunner(response: successResponse(for: fixture.request))
+        let bridge = makeBridge(runner: runner)
+        bridge.handle(invocationURL(for: fixture.requestURL))
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(!runner.didRun)
     }
 
     @Test func successfulResponseIsWrittenAtomicallyToAssociatedPath() async throws {
@@ -57,9 +113,13 @@ struct InboxCompanionBridgeTests {
         let expected = successResponse(for: fixture.request)
         let bridge = makeBridge(runner: FakeRunner(response: expected))
         bridge.handle(invocationURL(for: fixture.requestURL))
-        let data = try await waitForFile(at: fixture.responseURL)
-        #expect(try JSONDecoder().decode(InboxCompanionResponse.self, from: data) == expected)
-        #expect(!FileManager.default.fileExists(atPath: fixture.responseURL.deletingLastPathComponent().appendingPathComponent("response.json.tmp").path))
+        let response = try await waitForResponse(at: fixture.responseURL)
+        #expect(response.status == .success)
+        #expect(response.result == expected.result)
+        #expect(response.error == nil)
+        let temporaryFiles = try FileManager.default.contentsOfDirectory(atPath: fixture.responseURL.deletingLastPathComponent().path)
+            .filter { $0.hasPrefix(".response.") && $0.hasSuffix(".tmp") }
+        #expect(temporaryFiles.isEmpty)
     }
 
     @Test func overlappingRequestGetsBusyAtItsOwnResponsePath() async throws {
@@ -73,6 +133,20 @@ struct InboxCompanionBridgeTests {
         #expect(try await waitForResponse(at: second.responseURL).error?.code == .busy)
         runner.release()
         #expect(try await waitForResponse(at: first.responseURL) == successResponse(for: first.request))
+    }
+
+    @Test func queuedRequestsReceiveResponsesOrBusy() async throws {
+        let first = try makeRequest()
+        let second = try makeRequest()
+        let runner = BlockingRunner(response: successResponse(for: first.request))
+        let bridge = makeBridge(runner: runner)
+        let delegate = AppDelegate()
+        delegate.application(NSApplication.shared, open: [invocationURL(for: first.requestURL), invocationURL(for: second.requestURL)])
+        delegate.configureInboxCompanionBridge(bridge)
+        await runner.waitForStart()
+        #expect(try await waitForResponse(at: second.responseURL).error?.code == .busy)
+        runner.release()
+        _ = try await waitForResponse(at: first.responseURL)
     }
 
     @Test func bridgeDoesNotPresentOrActivateVoiceInkUI() async throws {
@@ -96,19 +170,20 @@ struct InboxCompanionBridgeTests {
     private func makeBridge(runner: (any InboxTranscriptionRunning)? = nil) -> InboxCompanionBridge {
         InboxCompanionBridge(
             runner: runner ?? FakeRunner(response: .failure(requestId: UUID(), error: InboxCompanionFailure(code: .internalFailure, phase: "test", message: "test", retryable: false))),
-            snapshotResolver: { _ in snapshot() }
+            snapshotResolver: { _, _ in snapshot() }
         )
     }
 
-    private func makeRequest(directory: URL? = nil, responseURL: URL? = nil) throws -> (request: InboxCompanionRequest, requestURL: URL, responseURL: URL) {
+    private func makeRequest(directory: URL? = nil, responseURL: URL? = nil, promptURL: URL? = nil) throws -> (request: InboxCompanionRequest, requestURL: URL, responseURL: URL) {
         let directory = directory ?? privateRoot.appendingPathComponent("request.\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let responseURL = responseURL ?? directory.appendingPathComponent("response.json")
+        let promptURL = promptURL ?? try makeTrustedPrompt()
         let request = InboxCompanionRequest(
             contractVersion: InboxCompanionContract.version,
             requestId: UUID(),
             inputPath: directory.appendingPathComponent("input.m4a").path,
-            promptPath: directory.appendingPathComponent("prompt.txt").path,
+            promptPath: promptURL.path,
             responsePath: responseURL.path,
             cancellationPath: directory.appendingPathComponent("cancel").path,
             timeoutSeconds: 30
@@ -116,6 +191,19 @@ struct InboxCompanionBridgeTests {
         let requestURL = directory.appendingPathComponent("request.json")
         try JSONEncoder().encode(request).write(to: requestURL)
         return (request, requestURL, responseURL)
+    }
+
+    private func makeTrustedPrompt() throws -> URL {
+        let directory = privateRoot.resolvingSymlinksInPath()
+            .appendingPathComponent("companion.\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let executable = directory.appendingPathComponent("voiceink-inbox-transcribe")
+        let prompt = directory.appendingPathComponent("inbox-transcription-prompt.txt")
+        try Data("#!/bin/sh\n".utf8).write(to: executable)
+        try Data("test".utf8).write(to: prompt)
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: prompt.path)
+        return prompt
     }
 
     private func invocationURL(for requestURL: URL, suffix: String = "") -> URL {
@@ -127,7 +215,9 @@ struct InboxCompanionBridgeTests {
     }
 
     private func successResponse(for request: InboxCompanionRequest) -> InboxCompanionResponse {
-        .failure(requestId: request.requestId, error: InboxCompanionFailure(code: .internalFailure, phase: "test", message: "test", retryable: false))
+        let mode = InboxCompanionModeIdentity(id: UUID(), name: "Inbox")
+        let model = InboxCompanionModelIdentity(name: "inbox-whisper", displayName: "Inbox Whisper", provider: "whisper")
+        return .success(requestId: request.requestId, result: InboxCompanionSuccess(transcript: "completed", mode: mode, model: model, language: "en", mediaDurationSeconds: 1, execution: .local, prompt: InboxCompanionPromptMetadata(applied: true, sha256: "test"), aiEnhancementApplied: false))
     }
 
     private func snapshot() -> InboxCompanionRuntimeSnapshot {
@@ -154,10 +244,7 @@ private final class FakeRunner: InboxTranscriptionRunning {
     let response: InboxCompanionResponse
     private(set) var didRun = false
     init(response: InboxCompanionResponse) { self.response = response }
-    func run(request: InboxCompanionRequest, snapshot: InboxCompanionRuntimeSnapshot, cancellation: TranscriptionCancellationToken) async -> InboxCompanionResponse {
-        didRun = true
-        return response
-    }
+    func run(request: InboxCompanionRequest, snapshot: InboxCompanionRuntimeSnapshot, cancellation: TranscriptionCancellationToken) async -> InboxCompanionResponse { didRun = true; return response }
 }
 
 @MainActor
@@ -168,20 +255,12 @@ private final class BlockingRunner: InboxTranscriptionRunning {
     private var didStart = false
     init(response: InboxCompanionResponse) { self.response = response }
     func run(request: InboxCompanionRequest, snapshot: InboxCompanionRuntimeSnapshot, cancellation: TranscriptionCancellationToken) async -> InboxCompanionResponse {
-        didStart = true
-        startContinuation?.resume()
-        startContinuation = nil
+        didStart = true; startContinuation?.resume(); startContinuation = nil
         await withCheckedContinuation { releaseContinuation = $0 }
         return response
     }
-    func waitForStart() async {
-        if didStart { return }
-        await withCheckedContinuation { startContinuation = $0 }
-    }
-    func release() {
-        releaseContinuation?.resume()
-        releaseContinuation = nil
-    }
+    func waitForStart() async { if !didStart { await withCheckedContinuation { startContinuation = $0 } } }
+    func release() { releaseContinuation?.resume(); releaseContinuation = nil }
 }
 
 @MainActor
