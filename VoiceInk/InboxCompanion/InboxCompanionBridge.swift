@@ -63,18 +63,60 @@ final class InboxCompanionBridge {
         let startedAt = ContinuousClock.now
         Task { @MainActor [weak self] in
             guard let self else { return }
-            let response = await self.run(request)
+            let response = await self.runBounded(request, directory: validated.directory)
             self.write(response, to: validated.directory)
             self.hasActiveRequest = false
             self.log(requestId: request.requestId, phase: "complete", code: response.error?.code, startedAt: startedAt)
         }
     }
 
-    private func run(_ request: InboxCompanionRequest) async -> InboxCompanionResponse {
+    /// Races the transcription against the request's cancel marker and its deadline. Whichever
+    /// arrives first, the losing side is unwound and its cleanup awaited so that exactly one
+    /// response is written and no request-scoped audio survives.
+    private func runBounded(_ request: InboxCompanionRequest, directory: RequestDirectoryHandle) async -> InboxCompanionResponse {
+        let cancellation = TranscriptionCancellationToken()
+        let outcome = await withTaskGroup(of: BoundedOutcome?.self, returning: BoundedOutcome.self) { group in
+            group.addTask { @MainActor in BoundedOutcome.completed(await self.run(request, cancellation: cancellation)) }
+            group.addTask { @MainActor in
+                await Self.awaitAbort(request: request, directory: directory).map { BoundedOutcome.aborted($0) }
+            }
+
+            var settled: BoundedOutcome?
+            while let next = await group.next() {
+                guard let next else { continue }
+                settled = next
+                // Set the token before cancelling so whisper.cpp's abort callback observes it.
+                if case .aborted = next { cancellation.cancel() }
+                group.cancelAll()
+                while await group.next() != nil {}
+                break
+            }
+            return settled ?? .aborted(.internalFailure)
+        }
+
+        switch outcome {
+        case .completed(let response):
+            return response
+        case .aborted(let code):
+            return failure(request, code: code, phase: "transcription", retryable: code == .timeout)
+        }
+    }
+
+    private static func awaitAbort(request: InboxCompanionRequest, directory: RequestDirectoryHandle) async -> InboxCompanionFailureCode? {
+        let deadline = ContinuousClock.now + .seconds(request.timeoutSeconds)
+        while !Task.isCancelled {
+            if directory.hasCancellationMarker() { return .cancelled }
+            if ContinuousClock.now >= deadline { return .timeout }
+            do { try await Task.sleep(for: .milliseconds(25)) } catch { return nil }
+        }
+        return nil
+    }
+
+    private func run(_ request: InboxCompanionRequest, cancellation: TranscriptionCancellationToken) async -> InboxCompanionResponse {
         do {
             let promptData = try trustedStaticPromptData(for: request)
             let snapshot = try snapshotResolver(request, promptData)
-            let response = await runner.run(request: request, snapshot: snapshot, cancellation: TranscriptionCancellationToken())
+            let response = await runner.run(request: request, snapshot: snapshot, cancellation: cancellation)
             guard response.requestId == request.requestId else {
                 return failure(request, code: .internalFailure, phase: "transcription", retryable: false)
             }
@@ -175,6 +217,11 @@ final class InboxCompanionBridge {
     }
 }
 
+private enum BoundedOutcome {
+    case completed(InboxCompanionResponse)
+    case aborted(InboxCompanionFailureCode)
+}
+
 private struct ValidatedRequest {
     let request: InboxCompanionRequest
     let directory: RequestDirectoryHandle
@@ -192,7 +239,9 @@ private enum PromptTrustError: Error {
     }
 }
 
-private final class RequestDirectoryHandle {
+// Sendable by inspection: both descriptors are immutable after init and every operation is a
+// single syscall against them, so the watcher and the operation may hold it concurrently.
+private final class RequestDirectoryHandle: @unchecked Sendable {
     private let rootFD: Int32
     private let directoryFD: Int32
 
@@ -209,6 +258,11 @@ private final class RequestDirectoryHandle {
                 return RequestDirectoryHandle(rootFD: rootFD, directoryFD: directoryFD)
             } catch { Darwin.close(directoryFD); throw error }
         } catch { Darwin.close(rootFD); throw error }
+    }
+
+    func hasCancellationMarker() -> Bool {
+        var status = stat()
+        return "cancel".withCString { Darwin.fstatat(directoryFD, $0, &status, AT_SYMLINK_NOFOLLOW) } == 0
     }
 
     func readRequest() throws -> Data {

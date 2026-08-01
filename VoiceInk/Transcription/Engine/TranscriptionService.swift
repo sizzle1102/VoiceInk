@@ -3,6 +3,14 @@ import Foundation
 struct TranscriptionRequestContext {
     let language: String?
     let prompt: String?
+    /// Only the inbox companion supplies a token; every existing caller stays uncancellable.
+    let cancellation: TranscriptionCancellationToken?
+
+    init(language: String?, prompt: String?, cancellation: TranscriptionCancellationToken? = nil) {
+        self.language = language
+        self.prompt = prompt
+        self.cancellation = cancellation
+    }
 
     static var currentDefaults: TranscriptionRequestContext {
         TranscriptionRequestContext(
@@ -13,7 +21,7 @@ struct TranscriptionRequestContext {
 
     func scoped(to model: any TranscriptionModel) -> TranscriptionRequestContext {
         guard model.provider == .whisper else {
-            return TranscriptionRequestContext(language: language, prompt: nil)
+            return TranscriptionRequestContext(language: language, prompt: nil, cancellation: cancellation)
         }
 
         return self

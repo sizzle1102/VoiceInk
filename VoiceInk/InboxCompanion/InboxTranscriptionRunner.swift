@@ -37,7 +37,7 @@ final class InboxTranscriptionRunner: InboxTranscriptionRunning {
             guard FileManager.default.fileExists(atPath: requestDirectory.path), URL(fileURLWithPath: request.cancellationPath).deletingLastPathComponent() == requestDirectory else { throw InboxCompanionPreflightError.inputUnreadable }
             let duration = try await audioPreparer.prepareReadOnlyInput(URL(fileURLWithPath: request.inputPath), wavOutput: wavURL)
             try cancellation.throwIfCancelled()
-            let context = TranscriptionRequestContext(language: snapshot.transcription.language, prompt: snapshot.promptApplied ? snapshot.prompt : nil)
+            let context = TranscriptionRequestContext(language: snapshot.transcription.language, prompt: snapshot.promptApplied ? snapshot.prompt : nil, cancellation: cancellation)
             var text = try await backend.transcribe(wavURL: wavURL, model: snapshot.transcription.model, context: context)
             try cancellation.throwIfCancelled()
             text = TranscriptionOutputFilter.filter(text).trimmingCharacters(in: .whitespacesAndNewlines)
