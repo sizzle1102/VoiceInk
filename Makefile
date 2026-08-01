@@ -4,7 +4,7 @@ WHISPER_CPP_DIR := $(DEPS_DIR)/whisper.cpp
 FRAMEWORK_PATH := $(WHISPER_CPP_DIR)/build-apple/whisper.xcframework
 LOCAL_DERIVED_DATA := $(CURDIR)/.local-build
 
-.PHONY: all clean whisper setup build local install update-install install-weekly-updater uninstall-weekly-updater check healthcheck help dev run release release-setup test-companion companion-transcribe test-companion-xcode
+.PHONY: all clean whisper setup build local install update-install install-weekly-updater uninstall-weekly-updater check healthcheck help dev run release release-setup test-companion test-companion-e2e companion-transcribe test-companion-xcode
 
 # Default target
 all: check build
@@ -78,6 +78,9 @@ local: check setup
 
 test-companion:
 	bash tests/inbox-companion-cli-test.sh
+
+test-companion-e2e:
+	bash tests/inbox-companion-e2e.sh
 
 companion-transcribe:
 	@test -n "$(INPUT)" || { echo "Usage: make companion-transcribe INPUT=/path/to/audio" >&2; exit 2; }
@@ -160,6 +163,9 @@ help:
 	@echo "  update-install     Sync/merge upstream in Actions, build, sign, and install"
 	@echo "  install-weekly-updater    Install weekly local update/sign/install LaunchAgent"
 	@echo "  uninstall-weekly-updater  Remove weekly local update/sign/install LaunchAgent"
+	@echo "  test-companion     Run inbox companion Bash contract tests"
+	@echo "  test-companion-xcode  Run inbox companion Swift unit tests"
+	@echo "  test-companion-e2e    Run inbox companion installed-app end-to-end check"
 	@echo "  run                Launch the built VoiceInk app"
 	@echo "  dev                Build and run the app (for development)"
 	@echo "  release            Build DMG and Appcast using release-notes/<version>.html"
