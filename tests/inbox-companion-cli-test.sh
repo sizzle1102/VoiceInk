@@ -63,21 +63,8 @@ cancellation_path="$(/usr/bin/plutil -extract cancellationPath raw -o - "$reques
 
 case "${VOICEINK_FAKE_OPEN_MODE:-success}" in
   timeout)
-    nohup /bin/sh -c '
-      cancellation_path="$1"
-      observed_path="$2"
-      attempts=0
-      while [ "$attempts" -lt 300 ]; do
-        if [ -e "$cancellation_path" ]; then
-          printf "cancel observed\\n" > "$observed_path"
-          exit 0
-        fi
-        sleep 0.01
-        attempts=$((attempts + 1))
-      done
-      exit 1
-    ' fake-open-cancel-watcher "$cancellation_path" "$VOICEINK_FAKE_CANCEL_OBSERVED" \
-      >/dev/null 2>&1 &
+    # Preserve the CLI's zero-byte marker beyond its request-directory cleanup.
+    ln -s "$VOICEINK_FAKE_CANCEL_OBSERVED" "$cancellation_path"
     exit 0
     ;;
   success)
@@ -270,11 +257,7 @@ run_timeout_case() {
 
   assert_failure_code "$stdout_path" "timeout"
   [[ -s "$FAKE_OPEN_LOG" ]] || fail "timeout did not invoke fake open"
-  for _ in $(seq 1 30); do
-    [[ -s "$CASE_DIR/cancel-observed.txt" ]] && break
-    /bin/sleep 0.1
-  done
-  [[ -s "$CASE_DIR/cancel-observed.txt" ]] || fail "timeout did not write a cancellation marker"
+  [[ -e "$CASE_DIR/cancel-observed.txt" ]] || fail "timeout did not write a cancellation marker"
   echo 'PASS: timeout'
 }
 
