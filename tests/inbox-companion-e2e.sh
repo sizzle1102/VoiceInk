@@ -103,6 +103,24 @@ mode_digest() {
   /usr/bin/defaults read "$DOMAIN" "$MODE_KEY" 2>/dev/null | /usr/bin/shasum -a 256 | /usr/bin/awk '{print $1}'
 }
 
+# The properties this command actually depends on, so a launch-time re-encode of the blob does
+# not read as a settings change while a real edit still would.
+mode_semantics() {
+  /usr/bin/defaults export "$DOMAIN" - 2>/dev/null | /usr/bin/python3 -c '
+import json
+import plistlib
+import sys
+
+document = plistlib.loads(sys.stdin.buffer.read())
+modes = json.loads(document["modeConfigurationsV2"])
+print(json.dumps([
+    [m.get("name"), m.get("selectedTranscriptionModelName"), m.get("selectedLanguage"),
+     m.get("isEnabled"), m.get("isAIEnhancementEnabled"), m.get("isTextFormattingEnabled")]
+    for m in modes
+], sort_keys=True))
+'
+}
+
 seed_modes() {
   local duplicate="$1"
   local hex
@@ -149,7 +167,8 @@ assert_success_response() {
   assert_equal '1' "$(json_field "$response" contractVersion)" "$label contract version"
   assert_equal 'success' "$(json_field "$response" status)" "$label status"
   assert_equal 'Inbox' "$(json_field "$response" result.mode.name)" "$label mode name"
-  assert_equal 'whisper' "$(json_field "$response" result.model.provider)" "$label provider"
+  # ModelProvider.whisper's raw value is "Whisper", and that raw value is what the contract reports.
+  assert_equal 'Whisper' "$(json_field "$response" result.model.provider)" "$label provider"
   assert_equal 'ru' "$(json_field "$response" result.language)" "$label language"
   assert_equal 'local' "$(json_field "$response" result.execution)" "$label execution"
   assert_equal 'true' "$(json_field "$response" result.prompt.applied)" "$label prompt applied"
@@ -229,9 +248,9 @@ fi
 [[ -s "$MODEL_FILE" ]] || fail "$MODEL_NAME is empty"
 
 seed_modes single
-SEEDED_MODE_DIGEST="$(mode_digest)"
-HISTORY_BEFORE="$(history_count)"
-RECORDINGS_BEFORE="$(recordings_listing)"
+# Launching the app creates its SwiftData stores and re-encodes the mode blob in full, so the
+# byte-level baselines are taken once it is warm. This semantic baseline spans the cold start.
+SEEDED_MODE_SEMANTICS="$(mode_semantics)"
 
 # ---------------------------------------------------------------------------
 # Request 1: cold start through the companion URL with the app closed
@@ -249,12 +268,14 @@ fi
 assert_success_response "$WORK/response1.json" 'cold start'
 
 assert_equal "$FIXTURE_CHECKSUM" "$(/usr/bin/shasum -a 256 "$FIXTURE" | /usr/bin/awk '{print $1}')" 'cold start input checksum'
-assert_equal "$SEEDED_MODE_DIGEST" "$(mode_digest)" 'cold start mode settings'
-assert_equal "$HISTORY_BEFORE" "$(history_count)" 'cold start history count'
-assert_equal "$RECORDINGS_BEFORE" "$(recordings_listing)" 'cold start recordings listing'
+assert_equal "$SEEDED_MODE_SEMANTICS" "$(mode_semantics)" 'cold start mode settings'
 
-# Taken once the app is warm, so the comparison isolates the request from launch-time writes.
+# Byte-level baselines, taken warm so the comparisons isolate a request from launch-time writes.
 SETTINGS_DIGEST="$(settings_digest)"
+MODE_DIGEST="$(mode_digest)"
+HISTORY_BEFORE="$(history_count)"
+RECORDINGS_BEFORE="$(recordings_listing)"
+[[ "$HISTORY_BEFORE" =~ ^[0-9]+$ ]] || fail "could not count History rows (got '$HISTORY_BEFORE')"
 
 # ---------------------------------------------------------------------------
 # Request 2: second request while the app is already running
@@ -271,7 +292,8 @@ assert_success_response "$WORK/response2.json" 'warm'
   || fail 'both requests reported the same request ID'
 assert_equal "$FIXTURE_CHECKSUM" "$(/usr/bin/shasum -a 256 "$FIXTURE" | /usr/bin/awk '{print $1}')" 'warm input checksum'
 assert_equal "$SETTINGS_DIGEST" "$(settings_digest)" 'warm settings snapshot'
-assert_equal "$SEEDED_MODE_DIGEST" "$(mode_digest)" 'warm mode settings'
+assert_equal "$MODE_DIGEST" "$(mode_digest)" 'warm mode settings'
+assert_equal "$SEEDED_MODE_SEMANTICS" "$(mode_semantics)" 'warm mode semantics'
 assert_equal "$HISTORY_BEFORE" "$(history_count)" 'warm history count'
 assert_equal "$RECORDINGS_BEFORE" "$(recordings_listing)" 'warm recordings listing'
 

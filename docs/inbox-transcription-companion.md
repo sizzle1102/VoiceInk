@@ -34,7 +34,7 @@ same version-1 envelope:
   "result": {
     "transcript": "…",
     "mode": { "id": "…", "name": "Inbox" },
-    "model": { "name": "ggml-large-v3", "displayName": "…", "provider": "whisper" },
+    "model": { "name": "ggml-large-v3", "displayName": "…", "provider": "Whisper" },
     "language": "ru",
     "mediaDurationSeconds": 12.5,
     "execution": "local",
