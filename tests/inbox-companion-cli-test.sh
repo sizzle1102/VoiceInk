@@ -168,7 +168,7 @@ run_cli() {
   local cli="${VOICEINK_TEST_CLI:-$CASE_DIR/Companion/voiceink-inbox-transcribe}"
 
   HOME="$CASE_HOME" \
-    TMPDIR="$CASE_DIR/tmp" \
+    TMPDIR="${VOICEINK_TEST_TMPDIR:-$CASE_DIR/tmp}" \
     VOICEINK_COMPANION_OPEN_COMMAND="$open_command" \
     VOICEINK_FAKE_OPEN_LOG="$FAKE_OPEN_LOG" \
     VOICEINK_FAKE_CANCEL_OBSERVED="$CASE_DIR/cancel-observed.txt" \
@@ -394,6 +394,22 @@ run_prompt_anchor_preserves_user_edit_case() {
   echo 'PASS: prompt anchor preserves user edit'
 }
 
+run_trailing_slash_tmpdir_case() {
+  prepare_case
+  local stdout_path="$CASE_DIR/stdout.json"
+  local stderr_path="$CASE_DIR/stderr.txt"
+
+  # macOS exports TMPDIR with a trailing slash. A doubled separator makes VoiceInk reject the
+  # request path as non-canonical and never write a response, so the CLI must normalize it.
+  VOICEINK_TEST_TMPDIR="$CASE_DIR/tmp/" run_cli_expecting_success "$stdout_path" "$stderr_path" "$INPUT_PATH"
+
+  assert_equal "success" "$(json_value "$stdout_path" status)" "trailing slash TMPDIR status"
+  if grep -q '%2F%2F' "$FAKE_OPEN_LOG"; then
+    fail "request path contains a doubled separator: $(cat "$FAKE_OPEN_LOG")"
+  fi
+  echo 'PASS: trailing slash TMPDIR'
+}
+
 run_symlinked_anchor_case() {
   prepare_case
   local stdout_path="$CASE_DIR/stdout.json"
@@ -444,6 +460,7 @@ run_invalid_request_id_case
 run_launch_failure_case
 run_prompt_anchor_case
 run_prompt_anchor_preserves_user_edit_case
+run_trailing_slash_tmpdir_case
 run_symlinked_anchor_case
 
 echo 'inbox companion CLI tests passed'

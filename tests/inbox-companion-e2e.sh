@@ -21,7 +21,7 @@ MODEL_NAME='ggml-tiny'
 MODEL_FILE="$MODELS/$MODEL_NAME.bin"
 MODEL_URL="https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$MODEL_NAME.bin"
 MODE_KEY='modeConfigurationsV2'
-REQUEST_TIMEOUT=600
+REQUEST_TIMEOUT=240
 
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/voiceink-inbox-e2e.XXXXXX")"
 MODEL_WAS_PRESENT=0
@@ -164,6 +164,22 @@ run_request() {
   VOICEINK_COMPANION_APP="$APP" "$CLI" --timeout "$REQUEST_TIMEOUT" "$@" > "$output" 2> "$WORK/stderr.txt"
 }
 
+# A silently dropped request looks exactly like a slow one from the CLI's side, so make the
+# app-side state visible before failing.
+diagnose() {
+  echo "--- diagnostics ---" >&2
+  printf 'shell TMPDIR=[%s]\n' "${TMPDIR:-unset}" >&2
+  printf 'launchd temp=[%s]\n' "$(getconf DARWIN_USER_TEMP_DIR)" >&2
+  printf 'app running=[%s]\n' "$(/usr/bin/pgrep -x VoiceInk || echo 'no')" >&2
+  printf 'request roots=[%s]\n' "$(/bin/ls -1d "${TMPDIR:-/tmp}"/voiceink-inbox-companion 2>/dev/null || echo 'none')" >&2
+  echo "--- CLI stderr ---" >&2
+  cat "$WORK/stderr.txt" >&2 2>/dev/null || true
+  echo "--- VoiceInk unified log ---" >&2
+  /usr/bin/log show --predicate 'subsystem == "com.prakashjoshipax.voiceink"' \
+    --last 15m --style compact 2>/dev/null | tail -60 >&2 || true
+  echo "--- end diagnostics ---" >&2
+}
+
 # ---------------------------------------------------------------------------
 # Preconditions
 # ---------------------------------------------------------------------------
@@ -222,7 +238,14 @@ RECORDINGS_BEFORE="$(recordings_listing)"
 # ---------------------------------------------------------------------------
 
 /usr/bin/pgrep -x VoiceInk >/dev/null 2>&1 && fail "app was still running before the cold-start request"
-run_request "$WORK/response1.json" "$FIXTURE" || fail "cold-start request failed: $(cat "$WORK/response1.json")"
+# The freshly copied bundle may not be known to LaunchServices yet, and `open -a` needs it to
+# accept the private scheme for this app.
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister \
+  -f "$APP" >/dev/null 2>&1 || true
+if ! run_request "$WORK/response1.json" "$FIXTURE"; then
+  diagnose
+  fail "cold-start request failed: $(cat "$WORK/response1.json")"
+fi
 assert_success_response "$WORK/response1.json" 'cold start'
 
 assert_equal "$FIXTURE_CHECKSUM" "$(/usr/bin/shasum -a 256 "$FIXTURE" | /usr/bin/awk '{print $1}')" 'cold start input checksum'
@@ -238,7 +261,10 @@ SETTINGS_DIGEST="$(settings_digest)"
 # ---------------------------------------------------------------------------
 
 /usr/bin/pgrep -x VoiceInk >/dev/null 2>&1 || fail "app was not running for the warm request"
-run_request "$WORK/response2.json" "$FIXTURE" || fail "warm request failed: $(cat "$WORK/response2.json")"
+if ! run_request "$WORK/response2.json" "$FIXTURE"; then
+  diagnose
+  fail "warm request failed: $(cat "$WORK/response2.json")"
+fi
 assert_success_response "$WORK/response2.json" 'warm'
 
 [[ "$(json_field "$WORK/response1.json" requestId)" != "$(json_field "$WORK/response2.json" requestId)" ]] \

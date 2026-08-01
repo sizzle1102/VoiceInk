@@ -262,7 +262,15 @@ if ! /usr/bin/iconv -f UTF-8 -t UTF-8 "$prompt_path" >/dev/null 2>&1; then
   exit 1
 fi
 
-request_root="${TMPDIR:-/tmp}/voiceink-inbox-companion"
+# macOS sets TMPDIR with a trailing slash, which would produce a doubled separator in the
+# request path. VoiceInk compares that path against its standardized form and would reject
+# the request without writing any response, so normalize the root before building it.
+temporary_root="${TMPDIR:-/tmp}"
+while [[ "$temporary_root" == */ && "$temporary_root" != / ]]; do
+  temporary_root="${temporary_root%/}"
+done
+
+request_root="$temporary_root/voiceink-inbox-companion"
 mkdir -p "$request_root"
 request_directory="$(mktemp -d "$request_root/request.XXXXXX")"
 trap cleanup EXIT
