@@ -179,14 +179,17 @@ struct InboxCompanionBridgeTests {
     @Test func overlappingRequestGetsBusyAtItsOwnResponsePath() async throws {
         let first = try makeRequest()
         let second = try makeRequest()
-        let runner = BlockingRunner(response: successResponse(for: first.request))
+        // Captured once: successResponse(for:) mints a fresh mode UUID on every call, so
+        // rebuilding the expectation here would compare against a different value.
+        let expected = successResponse(for: first.request)
+        let runner = BlockingRunner(response: expected)
         let bridge = makeBridge(runner: runner)
         bridge.handle(invocationURL(for: first.requestURL))
         await runner.waitForStart()
         bridge.handle(invocationURL(for: second.requestURL))
         #expect(try await waitForResponse(at: second.responseURL).error?.code == .busy)
         runner.release()
-        #expect(try await waitForResponse(at: first.responseURL) == successResponse(for: first.request))
+        #expect(try await waitForResponse(at: first.responseURL) == expected)
     }
 
     @Test func queuedRequestsReceiveResponsesOrBusy() async throws {
