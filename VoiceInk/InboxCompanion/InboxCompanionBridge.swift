@@ -2,9 +2,12 @@ import Darwin
 import Foundation
 import OSLog
 
+// File-level so the nonisolated request-directory handle can read it without crossing
+// the bridge's main-actor isolation, which Swift 6 rejects outright.
+private let maximumRequestBytes = 64 * 1024
+
 @MainActor
 final class InboxCompanionBridge {
-    fileprivate static let maximumRequestBytes = 64 * 1024
     private static let requiredRequestKeys: Set<String> = [
         "contractVersion", "requestId", "inputPath", "promptPath", "responsePath", "cancellationPath", "timeoutSeconds",
     ]
@@ -100,7 +103,7 @@ final class InboxCompanionBridge {
               let requestDirectoryName = directRequestDirectoryName(for: requestURL),
               let directory = try? RequestDirectoryHandle.open(rootURL: privateRootURL(), childName: requestDirectoryName),
               let requestData = try? directory.readRequest(),
-              requestData.count <= Self.maximumRequestBytes,
+              requestData.count <= maximumRequestBytes,
               hasClosedV1Schema(requestData),
               let request = try? JSONDecoder().decode(InboxCompanionRequest.self, from: requestData),
               request.responsePath == requestURL.deletingLastPathComponent().appendingPathComponent("response.json").path,
@@ -211,7 +214,7 @@ private final class RequestDirectoryHandle {
     func readRequest() throws -> Data {
         let fd = try openRegularFile("request.json", relativeTo: directoryFD)
         defer { Darwin.close(fd) }
-        return try readOwnedRegularFile(fd, maximumBytes: InboxCompanionBridge.maximumRequestBytes)
+        return try readOwnedRegularFile(fd, maximumBytes: maximumRequestBytes)
     }
 
     func writeResponse(_ data: Data) throws {

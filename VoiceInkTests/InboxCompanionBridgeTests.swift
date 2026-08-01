@@ -233,7 +233,7 @@ struct InboxCompanionBridgeTests {
         let directory = directory ?? privateRoot.appendingPathComponent("request.\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let responseURL = responseURL ?? directory.appendingPathComponent("response.json")
-        let promptURL = promptURL ?? try makeTrustedPrompt()
+        let promptURL = try promptURL ?? makeTrustedPrompt()
         let request = InboxCompanionRequest(
             contractVersion: InboxCompanionContract.version,
             requestId: UUID(),
