@@ -98,14 +98,51 @@ struct InboxCompanionBridgeTests {
         #expect(!FileManager.default.fileExists(atPath: fixture.responseURL.path))
     }
 
-    @Test func nonStaticPromptPathIsRejected() async throws {
-        let fixture = try makeRequest(promptURL: privateRoot.appendingPathComponent("other-prompt.txt"))
-        try Data("test".utf8).write(to: URL(fileURLWithPath: fixture.request.promptPath))
+    @Test func duplicateTopLevelRequestKeyIsRejected() async throws {
+        let fixture = try makeRequest()
+        let original = try Data(contentsOf: fixture.requestURL)
+        var duplicate = Data("{\"requestId\":\"\(UUID().uuidString)\",".utf8)
+        duplicate.append(contentsOf: original.dropFirst())
+        try duplicate.write(to: fixture.requestURL)
         let runner = FakeRunner(response: successResponse(for: fixture.request))
         let bridge = makeBridge(runner: runner)
         bridge.handle(invocationURL(for: fixture.requestURL))
         try await Task.sleep(for: .milliseconds(50))
         #expect(!runner.didRun)
+        #expect(!FileManager.default.fileExists(atPath: fixture.responseURL.path))
+    }
+
+    @Test func mismatchedPromptPathProducesAssociatedFailure() async throws {
+        let fixture = try makeRequest(promptURL: privateRoot.appendingPathComponent("other-prompt.txt"))
+        try Data("test".utf8).write(to: URL(fileURLWithPath: fixture.request.promptPath))
+        let runner = FakeRunner(response: successResponse(for: fixture.request))
+        let bridge = makeBridge(runner: runner)
+        bridge.handle(invocationURL(for: fixture.requestURL))
+        let response = try await waitForResponse(at: fixture.responseURL)
+        #expect(!runner.didRun)
+        #expect(response.requestId == fixture.request.requestId)
+        #expect(response.error?.code == .promptUnreadable)
+    }
+
+    @Test func missingTrustedPromptProducesAssociatedFailure() async throws {
+        let fixture = try makeRequest()
+        try FileManager.default.removeItem(at: Self.trustedCompanionDirectory.appendingPathComponent("inbox-transcription-prompt.txt"))
+        let bridge = makeBridge(runner: FakeRunner(response: successResponse(for: fixture.request)))
+        bridge.handle(invocationURL(for: fixture.requestURL))
+        let response = try await waitForResponse(at: fixture.responseURL)
+        #expect(response.requestId == fixture.request.requestId)
+        #expect(response.error?.code == .promptMissing)
+    }
+
+    @Test func unsafeTrustedPromptProducesAssociatedFailure() async throws {
+        let fixture = try makeRequest()
+        let prompt = Self.trustedCompanionDirectory.appendingPathComponent("inbox-transcription-prompt.txt")
+        try FileManager.default.setAttributes([.posixPermissions: 0o620], ofItemAtPath: prompt.path)
+        let bridge = makeBridge(runner: FakeRunner(response: successResponse(for: fixture.request)))
+        bridge.handle(invocationURL(for: fixture.requestURL))
+        let response = try await waitForResponse(at: fixture.responseURL)
+        #expect(response.requestId == fixture.request.requestId)
+        #expect(response.error?.code == .promptUnreadable)
     }
 
     @Test func successfulResponseIsWrittenAtomicallyToAssociatedPath() async throws {
@@ -167,10 +204,11 @@ struct InboxCompanionBridgeTests {
         FileManager.default.temporaryDirectory.appendingPathComponent("voiceink-inbox-companion", isDirectory: true)
     }
 
-    private func makeBridge(runner: (any InboxTranscriptionRunning)? = nil) -> InboxCompanionBridge {
+    private func makeBridge(runner: (any InboxTranscriptionRunning)? = nil, trustedDirectory: URL? = nil) -> InboxCompanionBridge {
         InboxCompanionBridge(
             runner: runner ?? FakeRunner(response: .failure(requestId: UUID(), error: InboxCompanionFailure(code: .internalFailure, phase: "test", message: "test", retryable: false))),
-            snapshotResolver: { _, _ in snapshot() }
+            snapshotResolver: { _, _ in snapshot() },
+            trustedCompanionDirectoryURL: trustedDirectory ?? Self.trustedCompanionDirectory
         )
     }
 
@@ -194,11 +232,8 @@ struct InboxCompanionBridgeTests {
     }
 
     private func makeTrustedPrompt() throws -> URL {
-        let directory = privateRoot.resolvingSymlinksInPath()
-            .appendingPathComponent("companion.\(UUID().uuidString)", isDirectory: true)
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-        let executable = directory.appendingPathComponent("voiceink-inbox-transcribe")
-        let prompt = directory.appendingPathComponent("inbox-transcription-prompt.txt")
+        let executable = Self.trustedCompanionDirectory.appendingPathComponent("voiceink-inbox-transcribe")
+        let prompt = Self.trustedCompanionDirectory.appendingPathComponent("inbox-transcription-prompt.txt")
         try Data("#!/bin/sh\n".utf8).write(to: executable)
         try Data("test".utf8).write(to: prompt)
         try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
@@ -237,6 +272,19 @@ struct InboxCompanionBridgeTests {
         }
         throw CocoaError(.fileNoSuchFile)
     }
+
+    private static let trustedCompanionDirectory: URL = {
+        let directory = FileManager.default.temporaryDirectory.resolvingSymlinksInPath()
+            .appendingPathComponent("voiceink-inbox-test-companion", isDirectory: true)
+        try! FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let executable = directory.appendingPathComponent("voiceink-inbox-transcribe")
+        let prompt = directory.appendingPathComponent("inbox-transcription-prompt.txt")
+        try! Data("#!/bin/sh\n".utf8).write(to: executable)
+        try! Data("test".utf8).write(to: prompt)
+        try! FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: executable.path)
+        try! FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: prompt.path)
+        return directory
+    }()
 }
 
 @MainActor

@@ -13,16 +13,19 @@ final class InboxCompanionBridge {
     private let runner: any InboxTranscriptionRunning
     private let snapshotResolver: (InboxCompanionRequest, Data) throws -> InboxCompanionRuntimeSnapshot
     private let fileManager: FileManager
+    private let trustedCompanionDirectoryURL: URL
     private var hasActiveRequest = false
 
     init(
         runner: any InboxTranscriptionRunning,
         snapshotResolver: @escaping (InboxCompanionRequest, Data) throws -> InboxCompanionRuntimeSnapshot,
-        fileManager: FileManager = .default
+        fileManager: FileManager = .default,
+        trustedCompanionDirectoryURL: URL = InboxCompanionInstallation.directoryURL
     ) {
         self.runner = runner
         self.snapshotResolver = snapshotResolver
         self.fileManager = fileManager
+        self.trustedCompanionDirectoryURL = trustedCompanionDirectoryURL.standardizedFileURL
     }
 
     static func isCompanionURL(_ url: URL) -> Bool {
@@ -57,15 +60,16 @@ final class InboxCompanionBridge {
         let startedAt = ContinuousClock.now
         Task { @MainActor [weak self] in
             guard let self else { return }
-            let response = await self.run(request, promptData: validated.promptData)
+            let response = await self.run(request)
             self.write(response, to: validated.directory)
             self.hasActiveRequest = false
             self.log(requestId: request.requestId, phase: "complete", code: response.error?.code, startedAt: startedAt)
         }
     }
 
-    private func run(_ request: InboxCompanionRequest, promptData: Data) async -> InboxCompanionResponse {
+    private func run(_ request: InboxCompanionRequest) async -> InboxCompanionResponse {
         do {
+            let promptData = try trustedStaticPromptData(for: request)
             let snapshot = try snapshotResolver(request, promptData)
             let response = await runner.run(request: request, snapshot: snapshot, cancellation: TranscriptionCancellationToken())
             guard response.requestId == request.requestId else {
@@ -73,6 +77,8 @@ final class InboxCompanionBridge {
             }
             return response
         } catch let error as InboxCompanionPreflightError {
+            return failure(request, code: error.failureCode, phase: "preflight", retryable: false)
+        } catch let error as PromptTrustError {
             return failure(request, code: error.failureCode, phase: "preflight", retryable: false)
         } catch {
             return failure(request, code: .internalFailure, phase: "preflight", retryable: false)
@@ -98,10 +104,9 @@ final class InboxCompanionBridge {
               hasClosedV1Schema(requestData),
               let request = try? JSONDecoder().decode(InboxCompanionRequest.self, from: requestData),
               request.responsePath == requestURL.deletingLastPathComponent().appendingPathComponent("response.json").path,
-              request.cancellationPath == requestURL.deletingLastPathComponent().appendingPathComponent("cancel").path,
-              let promptData = trustedStaticPromptData(at: request.promptPath)
+              request.cancellationPath == requestURL.deletingLastPathComponent().appendingPathComponent("cancel").path
         else { return nil }
-        return ValidatedRequest(request: request, promptData: promptData, directory: directory)
+        return ValidatedRequest(request: request, directory: directory)
     }
 
     private func canonicalRequestURL(from requestPath: String) -> URL? {
@@ -125,24 +130,26 @@ final class InboxCompanionBridge {
     }
 
     private func hasClosedV1Schema(_ data: Data) -> Bool {
-        guard let object = try? JSONSerialization.jsonObject(with: data),
+        var scanner = StrictTopLevelJSONKeys(data: data)
+        guard let keys = scanner.parse(),
+              keys.count == Self.requiredRequestKeys.count,
+              Set(keys).count == keys.count,
+              Set(keys) == Self.requiredRequestKeys,
+              let object = try? JSONSerialization.jsonObject(with: data),
               let dictionary = object as? [String: Any]
         else { return false }
         return Set(dictionary.keys) == Self.requiredRequestKeys
     }
 
-    // The CLI uses `pwd -P` and makes these two version-controlled sibling files the request's prompt authority.
-    // Their descriptors are checked and read here so preflight never reopens a caller-selected prompt pathname.
-    private func trustedStaticPromptData(at promptPath: String) -> Data? {
-        guard promptPath.hasPrefix("/") else { return nil }
-        let promptURL = URL(fileURLWithPath: promptPath).standardizedFileURL
-        guard promptURL.path == promptPath,
-              promptURL.lastPathComponent == "inbox-transcription-prompt.txt",
-              promptURL.resolvingSymlinksInPath().path == promptURL.path,
-              let directory = try? StaticPromptDirectory.open(at: promptURL.deletingLastPathComponent()),
-              let data = try? directory.readPrompt()
-        else { return nil }
-        return data
+    // Task 5 installs the version-controlled `Companion/` files into this fixed anchor.
+    // The request path is only an equality assertion; prompt bytes are reread from the anchor descriptor per request.
+    private func trustedStaticPromptData(for request: InboxCompanionRequest) throws -> Data {
+        let expectedPromptURL = InboxCompanionInstallation.promptURL(in: trustedCompanionDirectoryURL)
+        guard request.promptPath == expectedPromptURL.path,
+              trustedCompanionDirectoryURL.resolvingSymlinksInPath().path == trustedCompanionDirectoryURL.path
+        else { throw PromptTrustError.unreadable }
+        let directory = try StaticPromptDirectory.open(at: trustedCompanionDirectoryURL)
+        return try directory.readPrompt()
     }
 
     private func writeFailure(_ request: InboxCompanionRequest, code: InboxCompanionFailureCode, phase: String, retryable: Bool, to directory: RequestDirectoryHandle) {
@@ -167,8 +174,19 @@ final class InboxCompanionBridge {
 
 private struct ValidatedRequest {
     let request: InboxCompanionRequest
-    let promptData: Data
     let directory: RequestDirectoryHandle
+}
+
+private enum PromptTrustError: Error {
+    case missing
+    case unreadable
+
+    var failureCode: InboxCompanionFailureCode {
+        switch self {
+        case .missing: .promptMissing
+        case .unreadable: .promptUnreadable
+        }
+    }
 }
 
 private final class RequestDirectoryHandle {
@@ -221,18 +239,25 @@ private final class StaticPromptDirectory {
     deinit { Darwin.close(directoryFD) }
 
     static func open(at url: URL) throws -> StaticPromptDirectory {
-        let fd = try openDirectory(url.path, relativeTo: AT_FDCWD)
+        let fd: Int32
+        do { fd = try openDirectory(url.path, relativeTo: AT_FDCWD) }
+        catch let error as POSIXError where error.code == .ENOENT { throw PromptTrustError.missing }
+        catch { throw PromptTrustError.unreadable }
         do {
-            try requireOwnedDirectory(fd)
+            try requirePrivateDirectory(fd)
             try requireOwnedExecutable("voiceink-inbox-transcribe", relativeTo: fd)
             return StaticPromptDirectory(directoryFD: fd)
-        } catch { Darwin.close(fd); throw error }
+        } catch { Darwin.close(fd); throw PromptTrustError.unreadable }
     }
 
     func readPrompt() throws -> Data {
-        let fd = try openRegularFile("inbox-transcription-prompt.txt", relativeTo: directoryFD)
+        let fd: Int32
+        do { fd = try openRegularFile("inbox-transcription-prompt.txt", relativeTo: directoryFD) }
+        catch let error as POSIXError where error.code == .ENOENT { throw PromptTrustError.missing }
+        catch { throw PromptTrustError.unreadable }
         defer { Darwin.close(fd) }
-        return try readOwnedRegularFile(fd, maximumBytes: 1_048_576)
+        do { return try readOwnedTrustedFile(fd, maximumBytes: 1_048_576) }
+        catch { throw PromptTrustError.unreadable }
     }
 }
 
@@ -276,7 +301,8 @@ private func requireOwnedExecutable(_ name: String, relativeTo directoryFD: Int3
     guard result == 0,
           (mode_t(status.st_mode) & mode_t(S_IFMT)) == mode_t(S_IFREG),
           status.st_uid == getuid(),
-          (mode_t(status.st_mode) & mode_t(S_IXUSR)) != 0
+          (mode_t(status.st_mode) & mode_t(S_IXUSR)) != 0,
+          (mode_t(status.st_mode) & (mode_t(S_IWGRP) | mode_t(S_IWOTH))) == 0
     else { throw POSIXError(.EPERM) }
 }
 
@@ -297,6 +323,16 @@ private func readOwnedRegularFile(_ fd: Int32, maximumBytes: Int) throws -> Data
         }
     }
     return data
+}
+
+private func readOwnedTrustedFile(_ fd: Int32, maximumBytes: Int) throws -> Data {
+    var status = stat()
+    guard Darwin.fstat(fd, &status) == 0,
+          (mode_t(status.st_mode) & mode_t(S_IFMT)) == mode_t(S_IFREG),
+          status.st_uid == getuid(),
+          (mode_t(status.st_mode) & (mode_t(S_IWGRP) | mode_t(S_IWOTH))) == 0
+    else { throw POSIXError(.EPERM) }
+    return try readOwnedRegularFile(fd, maximumBytes: maximumBytes)
 }
 
 private func writeAll(_ data: Data, to fd: Int32) throws {
