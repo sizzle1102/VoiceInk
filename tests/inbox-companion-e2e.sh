@@ -38,18 +38,29 @@ assert_equal() {
   [[ "$2" == "$1" ]] || fail "$3 (expected '$1', got '$2')"
 }
 
+# Returns non-zero if the app is still alive afterwards. A surviving process would keep serving
+# requests from its already-loaded modes, which would silently invalidate a reseeded expectation.
 quit_app() {
   /usr/bin/osascript -e 'tell application id "com.prakashjoshipax.VoiceInk" to quit' >/dev/null 2>&1 || true
   /usr/bin/pkill -x VoiceInk >/dev/null 2>&1 || true
-  # cfprefsd caches this domain for the app; drop it so a reseed is observed on next launch.
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
-    /usr/bin/pgrep -x VoiceInk >/dev/null 2>&1 || break
+  for _ in $(/usr/bin/seq 1 20); do
+    /usr/bin/pgrep -x VoiceInk >/dev/null 2>&1 || return 0
     /bin/sleep 1
   done
+  /usr/bin/pkill -9 -x VoiceInk >/dev/null 2>&1 || true
+  for _ in 1 2 3 4 5; do
+    /usr/bin/pgrep -x VoiceInk >/dev/null 2>&1 || return 0
+    /bin/sleep 1
+  done
+  return 1
+}
+
+mode_count() {
+  mode_semantics | /usr/bin/python3 -c 'import json,sys; print(len(json.load(sys.stdin)))'
 }
 
 cleanup() {
-  quit_app
+  quit_app || true
   if [[ "$MODEL_WAS_PRESENT" -eq 0 ]]; then
     rm -f "$MODEL_FILE"
   fi
@@ -207,7 +218,7 @@ diagnose() {
 [[ -x "$CLI" ]] || fail "companion CLI not found at $CLI"
 command -v /usr/bin/sqlite3 >/dev/null || fail "sqlite3 is required to count history rows"
 
-quit_app
+quit_app || fail 'a VoiceInk process was already running and would not exit'
 
 if /usr/bin/defaults read "$DOMAIN" "$MODE_KEY" >/dev/null 2>&1; then
   HAD_MODE_KEY=1
@@ -315,10 +326,13 @@ else
 fi
 chmod 0600 "$ANCHOR_PROMPT"
 
-quit_app
+quit_app || fail 'app did not exit before reseeding modes, so it would answer from stale configuration'
 seed_modes duplicate
+assert_equal '2' "$(mode_count)" 'duplicate seed landed in the app domain'
+
 if run_request "$WORK/response-duplicate.json" "$FIXTURE"; then
-  fail 'duplicate Inbox mode request unexpectedly succeeded'
+  diagnose
+  fail "duplicate Inbox mode request unexpectedly succeeded: $(cat "$WORK/response-duplicate.json")"
 fi
 assert_equal 'failure' "$(json_field "$WORK/response-duplicate.json" status)" 'duplicate mode status'
 assert_equal 'inbox_mode_duplicate' "$(json_field "$WORK/response-duplicate.json" error.code)" 'duplicate mode code'
