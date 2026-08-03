@@ -3,9 +3,10 @@ DEPS_DIR := $(HOME)/VoiceInk-Dependencies
 WHISPER_CPP_DIR := $(DEPS_DIR)/whisper.cpp
 FRAMEWORK_PATH := $(WHISPER_CPP_DIR)/build-apple/whisper.xcframework
 LOCAL_DERIVED_DATA := $(CURDIR)/.local-build
-# mlx-swift ships a CudaBuild build-tool plugin, and a non-interactive build has no way
-# to grant it the approval Xcode otherwise prompts for.
-XCODEBUILD_FLAGS := -skipPackagePluginValidation
+# The mlx-swift packages ship a build-tool plugin (CudaBuild) and a macro
+# (MLXHuggingFaceMacros), and a non-interactive build has no way to grant either the
+# approval Xcode otherwise prompts for.
+XCODEBUILD_FLAGS := -skipPackagePluginValidation -skipMacroValidation
 
 .PHONY: all clean whisper setup build local install update-install install-weekly-updater uninstall-weekly-updater check healthcheck help dev run release release-setup test-companion test-companion-e2e companion-transcribe test-companion-xcode
 
