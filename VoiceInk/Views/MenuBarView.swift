@@ -1,4 +1,3 @@
-import LaunchAtLogin
 import OSLog
 import SwiftUI
 
@@ -16,10 +15,10 @@ struct MenuBarView: View {
     @EnvironmentObject var updaterViewModel: UpdaterViewModel
     @EnvironmentObject var enhancementService: AIEnhancementService
     @EnvironmentObject var aiService: AIService
+    @ObservedObject private var launchAtLoginManager = LaunchAtLoginManager.shared
     @ObservedObject private var modeManager = ModeManager.shared
     @ObservedObject var audioDeviceManager = AudioDeviceManager.shared
     @AppStorage("hasCompletedOnboardingV2") private var hasCompletedOnboardingV2 = false
-    @State private var launchAtLoginEnabled = LaunchAtLogin.isEnabled
 
     var body: some View {
         VStack {
@@ -143,10 +142,14 @@ struct MenuBarView: View {
             }
             .keyboardShortcut("d", modifiers: [.command, .shift])
 
-            Toggle("Launch at Login", isOn: $launchAtLoginEnabled)
-                .onChange(of: launchAtLoginEnabled) { oldValue, newValue in
-                    LaunchAtLogin.isEnabled = newValue
-                }
+            Toggle(
+                "Launch at Login",
+                isOn: Binding(
+                    get: { launchAtLoginManager.isEnabled },
+                    set: { launchAtLoginManager.setEnabled($0) }
+                )
+            )
+            .disabled(launchAtLoginManager.isUpdating)
 
             Divider()
 
