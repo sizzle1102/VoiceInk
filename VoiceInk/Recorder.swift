@@ -13,9 +13,6 @@ class Recorder: NSObject, ObservableObject {
     private var isReconfiguring = false
     private let mediaController = MediaController.shared
     private let playbackController = PlaybackController.shared
-    @Published var audioMeter = AudioMeter(averagePower: 0, peakPower: 0)
-    private var audioMeterUpdateTimer: DispatchSourceTimer?
-    private let audioMeterQueue = DispatchQueue(label: "com.prakashjoshipax.voiceink.audiometer", qos: .userInteractive)
     /// Dedicated serial queue for hardware setup.
     private let audioSetupQueue = DispatchQueue(label: "com.prakashjoshipax.voiceink.audioSetup", qos: .userInitiated)
     private let recordingAudioActionDelayNanoseconds: UInt64 = 220_000_000
@@ -134,7 +131,6 @@ class Recorder: NSObject, ObservableObject {
 
         audioRestorationTask?.cancel()
         audioRestorationTask = nil
-        audioMeterUpdateTimer?.cancel()
         pauseMedia()
         muteSystemAudio()
 
@@ -155,7 +151,7 @@ class Recorder: NSObject, ObservableObject {
                 }
             }
 
-            startAudioMeterTimer()
+            resetAudioMeter()
         } catch {
             logger.error(
                 "Failed to start recording deviceID=\(deviceID, privacy: .public) file=\(url.lastPathComponent, privacy: .public) error=\(error, privacy: .public)"
@@ -170,9 +166,6 @@ class Recorder: NSObject, ObservableObject {
         audioMuteTask = nil
         mediaPauseTask?.cancel()
         mediaPauseTask = nil
-        audioMeterUpdateTimer?.cancel()
-        audioMeterUpdateTimer = nil
-
         // Capture current recorder to stop it on the serial hardware queue.
         let currentRecorder = self.recorder
 
@@ -184,12 +177,7 @@ class Recorder: NSObject, ObservableObject {
         }
         onAudioChunk = nil
 
-        smoothedValuesLock.lock()
-        smoothedAverage = 0
-        smoothedPeak = 0
-        smoothedValuesLock.unlock()
-
-        audioMeter = AudioMeter(averagePower: 0, peakPower: 0)
+        resetAudioMeter()
 
         audioRestorationTask?.cancel()
         audioRestorationTask = Task {
@@ -232,16 +220,6 @@ class Recorder: NSObject, ObservableObject {
         }
     }
 
-    private func startAudioMeterTimer() {
-        let timer = DispatchSource.makeTimerSource(queue: audioMeterQueue)
-        timer.schedule(deadline: .now(), repeating: .milliseconds(17))
-        timer.setEventHandler { [weak self] in
-            self?.updateAudioMeter()
-        }
-        timer.resume()
-        audioMeterUpdateTimer = timer
-    }
-
     private func schedulePrepareForCurrentDevice(reason: String) {
         guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized else {
             return
@@ -268,8 +246,10 @@ class Recorder: NSObject, ObservableObject {
         }
     }
 
-    private func updateAudioMeter() {
-        guard let recorder = recorder else { return }
+    func audioMeterSnapshot() -> AudioMeter {
+        guard let recorder else {
+            return AudioMeter(averagePower: 0, peakPower: 0)
+        }
 
         // Sample audio levels (thread-safe read)
         let averagePower = recorder.averagePower
@@ -301,14 +281,20 @@ class Recorder: NSObject, ObservableObject {
         smoothedValuesLock.lock()
         smoothedAverage = smoothedAverage * 0.6 + normalizedAverage * 0.4
         smoothedPeak = smoothedPeak * 0.6 + normalizedPeak * 0.4
-        let newAudioMeter = AudioMeter(averagePower: Double(smoothedAverage), peakPower: Double(smoothedPeak))
+        let audioMeter = AudioMeter(
+            averagePower: Double(smoothedAverage),
+            peakPower: Double(smoothedPeak)
+        )
         smoothedValuesLock.unlock()
 
-        // Dispatch to main queue for UI updates (more efficient than Task)
-        DispatchQueue.main.async { [weak self] in
-            guard let self = self else { return }
-            self.audioMeter = newAudioMeter
-        }
+        return audioMeter
+    }
+
+    private func resetAudioMeter() {
+        smoothedValuesLock.lock()
+        smoothedAverage = 0
+        smoothedPeak = 0
+        smoothedValuesLock.unlock()
     }
 
     // MARK: - Cleanup
@@ -316,7 +302,6 @@ class Recorder: NSObject, ObservableObject {
     deinit {
         audioMuteTask?.cancel()
         mediaPauseTask?.cancel()
-        audioMeterUpdateTimer?.cancel()
         audioRestorationTask?.cancel()
         if let observer = deviceSwitchObserver {
             NotificationCenter.default.removeObserver(observer)

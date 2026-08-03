@@ -462,6 +462,8 @@ private struct ModelProviderIdentity {
         let fallbackSystemImage: String
 
         switch provider {
+        case .voiceInkRefine:
+            fallbackSystemImage = "sparkles"
         case .ollama:
             fallbackSystemImage = "server.rack"
         case .localCLI:
