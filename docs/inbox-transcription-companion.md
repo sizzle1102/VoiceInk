@@ -13,9 +13,11 @@ Companion/voiceink-inbox-transcribe /absolute/path/to/audio.m4a
 Companion/voiceink-inbox-transcribe --request-id "$REQUEST_ID" --timeout 900 /absolute/path/to/audio.m4a
 ```
 
-`--request-id` must be a UUID and is echoed back unchanged in the result, so a caller can
-correlate a response with the request it issued. `--timeout` is a positive whole number of
-seconds and defaults to `300`.
+`--request-id` must be a UUID and is echoed back in the result, so a caller can correlate a
+response with the request it issued — **compare it case-insensitively.** A failure this command
+detects on its own echoes the identifier exactly as supplied, while any result VoiceInk itself
+produces comes back as an uppercase UUID, so the two paths can report one request in different
+case. `--timeout` is a positive whole number of seconds and defaults to `300`.
 
 **stdout carries exactly one JSON result. stderr is diagnostics only** — never parse stderr,
 and never treat a non-empty stderr as failure on its own. The exit status is `0` only for a
@@ -29,7 +31,7 @@ same version-1 envelope:
 ```json
 {
   "contractVersion": 1,
-  "requestId": "9f1d1c62-1c2b-4a1e-9a3e-2f9a0b7d5e11",
+  "requestId": "9F1D1C62-1C2B-4A1E-9A3E-2F9A0B7D5E11",
   "status": "success",
   "result": {
     "transcript": "…",
