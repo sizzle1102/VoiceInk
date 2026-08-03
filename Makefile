@@ -3,6 +3,9 @@ DEPS_DIR := $(HOME)/VoiceInk-Dependencies
 WHISPER_CPP_DIR := $(DEPS_DIR)/whisper.cpp
 FRAMEWORK_PATH := $(WHISPER_CPP_DIR)/build-apple/whisper.xcframework
 LOCAL_DERIVED_DATA := $(CURDIR)/.local-build
+# mlx-swift ships a CudaBuild build-tool plugin, and a non-interactive build has no way
+# to grant it the approval Xcode otherwise prompts for.
+XCODEBUILD_FLAGS := -skipPackagePluginValidation
 
 .PHONY: all clean whisper setup build local install update-install install-weekly-updater uninstall-weekly-updater check healthcheck help dev run release release-setup test-companion test-companion-e2e companion-transcribe test-companion-xcode
 
@@ -42,13 +45,14 @@ setup: whisper
 	@echo "Please ensure your Xcode project references the framework from this new location."
 
 build: setup
-	xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Debug CODE_SIGN_IDENTITY="" build
+	xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Debug $(XCODEBUILD_FLAGS) CODE_SIGN_IDENTITY="" build
 
 # Build for local use without Apple Developer certificate
 local: check setup
 	@echo "Building VoiceInk for local use (no Apple Developer certificate required)..."
 	@rm -rf "$(LOCAL_DERIVED_DATA)"
 	xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Debug \
+		$(XCODEBUILD_FLAGS) \
 		-derivedDataPath "$(LOCAL_DERIVED_DATA)" \
 		-xcconfig LocalBuild.xcconfig \
 		CODE_SIGN_IDENTITY="-" \
@@ -88,6 +92,7 @@ companion-transcribe:
 
 test-companion-xcode:
 	xcodebuild test -project VoiceInk.xcodeproj -scheme VoiceInk \
+		$(XCODEBUILD_FLAGS) \
 		-destination 'platform=macOS' \
 		-derivedDataPath "$(CURDIR)/.local-build-tests" \
 		-xcconfig LocalBuild.xcconfig \
