@@ -1,5 +1,5 @@
 {
-  "originHash" : "92f23ea9771bf7c4e072587ae3f8c003da396a7e6291a65c2ad4acb671979963",
+  "originHash" : "ef9eb8e09cc8ad47145fb9d97103e7267e9dd9e5ee5b02f0ceb041eb1eb8f85c",
   "pins" : [
     {
       "identity" : "axswift",
@@ -22,10 +22,10 @@
     {
       "identity" : "fluidaudio",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/FluidInference/FluidAudio.git",
+      "location" : "https://github.com/FluidInference/FluidAudio",
       "state" : {
         "branch" : "main",
-        "revision" : "88d6d8166880dee1ac7c32c80f8e10cd782f8ca8"
+        "revision" : "c7b13a3942e79893f3bd76bfe3b1ed8d03e0bfc7"
       }
     },
     {
@@ -43,7 +43,7 @@
       "location" : "https://github.com/Beingpax/LLMkit.git",
       "state" : {
         "branch" : "main",
-        "revision" : "7c32712a286221dab39da7e40d824a6d55e33dad"
+        "revision" : "3b9086e3df729f39c2ca8951d09fb6ef4d4a193b"
       }
     },
     {
@@ -223,6 +223,15 @@
       "state" : {
         "revision" : "b38443e44d93eca770f2eb68e2a4d0fa100f9aa2",
         "version" : "1.3.0"
+      }
+    },
+    {
+      "identity" : "transcribe-cpp-swift",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/Beingpax/Transcribe-cpp-swift.git",
+      "state" : {
+        "revision" : "fb1c1ad99e8939a69fcfb613417d9635fb77ef42",
+        "version" : "0.2.0-dev.856d7c1"
       }
     },
     {
