@@ -1,6 +1,7 @@
 import AVFoundation
 import CoreAudio
 import Foundation
+import IOKit.audio
 import os
 
 struct PrioritizedDevice: Codable, Identifiable {
@@ -17,13 +18,18 @@ enum AudioInputMode: String, CaseIterable {
 }
 
 class AudioDeviceManager: ObservableObject {
-    private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "AudioDeviceManager")
+    let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "AudioDeviceManager")
     @Published var availableDevices: [(id: AudioDeviceID, uid: String, name: String)] = []
     @Published var selectedDeviceID: AudioDeviceID?
     @Published var inputMode: AudioInputMode = .custom
     @Published var prioritizedDevices: [PrioritizedDevice] = []
 
-    var isRecordingActive: Bool = false
+    var recordingDeviceSession = RecordingDeviceSession()
+    var clamshellStateMonitor: ClamshellStateMonitor?
+
+    var isRecordingActive: Bool { recordingDeviceSession.isActive }
+    var activeRecordingDeviceID: AudioDeviceID? { recordingDeviceSession.activeDeviceID }
+    var isClamshellClosed: Bool { clamshellStateMonitor?.isClosed == true }
 
     static let shared = AudioDeviceManager()
 
@@ -37,6 +43,8 @@ class AudioDeviceManager: ObservableObject {
         } else {
             inputMode = .systemDefault
         }
+
+        setupRecordingDeviceRouting()
 
         loadAvailableDevices { [weak self] in
             self?.initializeSelectedDevice()
@@ -117,20 +125,6 @@ class AudioDeviceManager: ObservableObject {
         notifyDeviceChange()
     }
 
-    func findBestAvailableDevice() -> AudioDeviceID? {
-        if let device = availableDevices.first(where: { isBuiltInDevice($0.id) }) {
-            return device.id
-        }
-        return availableDevices.first?.id
-    }
-
-    private func isBuiltInDevice(_ deviceID: AudioDeviceID) -> Bool {
-        guard let uid = getDeviceUID(deviceID: deviceID) else {
-            return false
-        }
-        return uid.contains("BuiltIn")
-    }
-
     func loadAvailableDevices(completion: (() -> Void)? = nil) {
         var propertySize: UInt32 = 0
         var address = AudioObjectPropertyAddress(
@@ -192,13 +186,13 @@ class AudioDeviceManager: ObservableObject {
     }
 
     func getDeviceName(deviceID: AudioDeviceID) -> String? {
-        let name: CFString? = getDeviceProperty(
+        let name = getCFStringDeviceProperty(
             deviceID: deviceID,
             selector: kAudioDevicePropertyDeviceNameCFString)
         return name as String?
     }
 
-    private func isValidInputDevice(deviceID: AudioDeviceID) -> Bool {
+    func isValidInputDevice(deviceID: AudioDeviceID) -> Bool {
         var address = AudioObjectPropertyAddress(
             mSelector: kAudioDevicePropertyStreamConfiguration,
             mScope: kAudioDevicePropertyScopeInput,
@@ -220,8 +214,12 @@ class AudioDeviceManager: ObservableObject {
             return false
         }
 
-        let bufferList = UnsafeMutablePointer<AudioBufferList>.allocate(capacity: Int(propertySize))
-        defer { bufferList.deallocate() }
+        let bufferListStorage = UnsafeMutableRawPointer.allocate(
+            byteCount: Int(propertySize),
+            alignment: MemoryLayout<AudioBufferList>.alignment
+        )
+        defer { bufferListStorage.deallocate() }
+        let bufferList = bufferListStorage.assumingMemoryBound(to: AudioBufferList.self)
 
         result = AudioObjectGetPropertyData(
             deviceID,
@@ -239,8 +237,9 @@ class AudioDeviceManager: ObservableObject {
             return false
         }
 
-        let bufferCount = Int(bufferList.pointee.mNumberBuffers)
-        return bufferCount > 0
+        return UnsafeMutableAudioBufferListPointer(bufferList).contains {
+            $0.mNumberChannels > 0
+        }
     }
 
     func selectDevice(id: AudioDeviceID) {
@@ -295,26 +294,6 @@ class AudioDeviceManager: ObservableObject {
         }
 
         notifyDeviceChange()
-    }
-
-    func getCurrentDevice() -> AudioDeviceID {
-        switch inputMode {
-        case .systemDefault:
-            return getSystemDefaultDevice() ?? findBestAvailableDevice() ?? 0
-        case .custom:
-            if let id = selectedDeviceID, isDeviceAvailable(id) {
-                return id
-            }
-            return findBestAvailableDevice() ?? 0
-        case .prioritized:
-            let sortedDevices = prioritizedDevices.sorted { $0.priority < $1.priority }
-            for device in sortedDevices {
-                if let available = availableDevices.first(where: { $0.uid == device.id }) {
-                    return available.id
-                }
-            }
-            return findBestAvailableDevice() ?? 0
-        }
     }
 
     private func loadPrioritizedDevices() {
@@ -375,6 +354,7 @@ class AudioDeviceManager: ObservableObject {
             guard let found = findAvailableDevice(uid: saved.id, modelUID: saved.modelUID) else {
                 continue
             }
+            guard isDeviceUsableForRecording(found.id) else { continue }
             selectedDeviceID = found.id
             if found.uid != saved.id || saved.modelUID == nil {
                 rebindPrioritizedDevice(
@@ -418,46 +398,18 @@ class AudioDeviceManager: ObservableObject {
         loadAvailableDevices { [weak self] in
             guard let self = self else { return }
 
-            if self.inputMode == .systemDefault {
-                self.notifyDeviceChange()
+            if self.isRecordingActive {
+                guard let activeDeviceID = self.activeRecordingDeviceID,
+                    !self.isOperationalInputDevice(activeDeviceID)
+                else {
+                    return
+                }
+                self.requestRecordingDeviceChange(reason: .deviceUnavailable)
                 return
             }
 
-            if self.isRecordingActive {
-                guard let currentID = self.selectedDeviceID else { return }
-
-                if !self.isDeviceAvailable(currentID) {
-                    self.logger.warning(
-                        "🎙️ Recording device \(currentID, privacy: .public) no longer available - requesting switch")
-
-                    let newDeviceID: AudioDeviceID?
-                    if self.inputMode == .prioritized {
-                        let sortedDevices = self.prioritizedDevices.sorted { $0.priority < $1.priority }
-                        let priorityDeviceID = sortedDevices.compactMap { device in
-                            self.availableDevices.first(where: { $0.uid == device.id })?.id
-                        }.first
-
-                        if let deviceID = priorityDeviceID {
-                            newDeviceID = deviceID
-                        } else {
-                            newDeviceID = self.findBestAvailableDevice()
-                        }
-                    } else {
-                        newDeviceID = self.findBestAvailableDevice()
-                    }
-
-                    if let deviceID = newDeviceID {
-                        self.selectedDeviceID = deviceID
-                        NotificationCenter.default.post(
-                            name: .audioDeviceSwitchRequired,
-                            object: nil,
-                            userInfo: ["newDeviceID": deviceID]
-                        )
-                    } else {
-                        self.logger.error("No audio input devices available!")
-                        NotificationCenter.default.post(name: .toggleRecorderPanel, object: nil)
-                    }
-                }
+            if self.inputMode == .systemDefault {
+                self.notifyDeviceChange()
                 return
             }
 
@@ -470,20 +422,20 @@ class AudioDeviceManager: ObservableObject {
     }
 
     private func getDeviceUID(deviceID: AudioDeviceID) -> String? {
-        let uid: CFString? = getDeviceProperty(
+        let uid = getCFStringDeviceProperty(
             deviceID: deviceID,
             selector: kAudioDevicePropertyDeviceUID)
         return uid as String?
     }
 
     func getDeviceModelUID(deviceID: AudioDeviceID) -> String? {
-        let uid: CFString? = getDeviceProperty(
+        let uid = getCFStringDeviceProperty(
             deviceID: deviceID,
             selector: kAudioDevicePropertyModelUID)
         return uid as String?
     }
 
-    private func findAvailableDevice(uid: String, modelUID: String?) -> (id: AudioDeviceID, uid: String, name: String)?
+    func findAvailableDevice(uid: String, modelUID: String?) -> (id: AudioDeviceID, uid: String, name: String)?
     {
         if !uid.isEmpty, let found = availableDevices.first(where: { $0.uid == uid }) {
             return found
@@ -545,6 +497,7 @@ class AudioDeviceManager: ObservableObject {
             },
             UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque())
         )
+
     }
 
     private func createPropertyAddress(
@@ -559,16 +512,16 @@ class AudioDeviceManager: ObservableObject {
         )
     }
 
-    private func getDeviceProperty<T>(
+    private func getCFStringDeviceProperty(
         deviceID: AudioDeviceID,
         selector: AudioObjectPropertySelector,
         scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal
-    ) -> T? {
+    ) -> CFString? {
         guard deviceID != 0 else { return nil }
 
         var address = createPropertyAddress(selector: selector, scope: scope)
-        var propertySize = UInt32(MemoryLayout<T>.size)
-        var property: T? = nil
+        var propertySize = UInt32(MemoryLayout<CFString?>.size)
+        var property: CFString?
 
         let status = AudioObjectGetPropertyData(
             deviceID,
@@ -589,7 +542,66 @@ class AudioDeviceManager: ObservableObject {
         return property
     }
 
-    private func notifyDeviceChange() {
+    func getUInt32DeviceProperty(
+        deviceID: AudioDeviceID,
+        selector: AudioObjectPropertySelector,
+        scope: AudioObjectPropertyScope = kAudioObjectPropertyScopeGlobal
+    ) -> UInt32? {
+        guard deviceID != 0 else { return nil }
+
+        var address = createPropertyAddress(selector: selector, scope: scope)
+        var propertySize = UInt32(MemoryLayout<UInt32>.size)
+        var property: UInt32 = 0
+
+        let status = AudioObjectGetPropertyData(
+            deviceID,
+            &address,
+            0,
+            nil,
+            &propertySize,
+            &property
+        )
+        guard status == noErr else { return nil }
+        return property
+    }
+
+    /// The MacBook's internal microphone is physically disconnected when the lid closes.
+    /// A headset-jack microphone also uses the built-in codec, so transport alone cannot identify lid-dependent inputs.
+    func isInternalMicrophone(_ deviceID: AudioDeviceID) -> Bool {
+        guard
+            getUInt32DeviceProperty(
+                deviceID: deviceID,
+                selector: kAudioDevicePropertyTransportType
+            ) == kAudioDeviceTransportTypeBuiltIn
+        else {
+            return false
+        }
+
+        let uid = getDeviceUID(deviceID: deviceID)
+        let dataSource = getUInt32DeviceProperty(
+            deviceID: deviceID,
+            selector: kAudioDevicePropertyDataSource,
+            scope: kAudioDevicePropertyScopeInput
+        )
+        let internalMicrophoneSource = UInt32(kIOAudioSelectorControlSelectionValueInternalMicrophone)
+        let externalMicrophoneSource = UInt32(kIOAudioSelectorControlSelectionValueExternalMicrophone)
+
+        if dataSource == externalMicrophoneSource {
+            return false
+        }
+        if dataSource == internalMicrophoneSource {
+            return true
+        }
+
+        // Older Apple drivers may not implement data-source controls. Keep the known system
+        // device UIDs only as a final compatibility fallback and fail open for unknown inputs.
+        if uid == "BuiltInHeadphoneInputDevice" {
+            return false
+        }
+        return uid == "BuiltInMicrophoneDevice"
+    }
+
+    func notifyDeviceChange() {
         NotificationCenter.default.post(name: NSNotification.Name("AudioDeviceChanged"), object: nil)
     }
 }

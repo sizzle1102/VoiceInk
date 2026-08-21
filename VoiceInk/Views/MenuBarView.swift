@@ -1,9 +1,6 @@
-import OSLog
 import SwiftUI
 
 struct MenuBarView: View {
-    private let logger = Logger(subsystem: "com.prakashjoshipax.voiceink", category: "MenuBarWindowFlow")
-
     @Environment(\.openWindow) private var openWindow
     @EnvironmentObject var engine: VoiceInkEngine
     @EnvironmentObject var recorderUIManager: RecorderUIManager
@@ -33,7 +30,7 @@ struct MenuBarView: View {
     private var onboardingMenu: some View {
         Group {
             Button("Complete Onboarding") {
-                showMainWindow(reason: "Complete Onboarding")
+                showMainWindow()
             }
 
             Divider()
@@ -70,11 +67,11 @@ struct MenuBarView: View {
                 Divider()
 
                 Button("Manage Modes") {
-                    showMainWindowAndNavigate(to: "Modes", reason: "Manage Modes")
+                    showMainWindowAndNavigate(to: "Modes")
                 }
 
                 Button("Manage Models") {
-                    showMainWindowAndNavigate(to: "AI Models", reason: "Manage Models")
+                    showMainWindowAndNavigate(to: "AI Models")
                 }
             } label: {
                 HStack {
@@ -137,7 +134,7 @@ struct MenuBarView: View {
                 menuBarManager.toggleMenuBarOnly()
 
                 if shouldShowMainWindow {
-                    showMainWindow(reason: "Show Dock Icon")
+                    showMainWindow()
                 }
             }
             .keyboardShortcut("d", modifiers: [.command, .shift])
@@ -154,7 +151,7 @@ struct MenuBarView: View {
             Divider()
 
             Button("Settings") {
-                showMainWindowAndNavigate(to: "Settings", reason: "Settings")
+                showMainWindowAndNavigate(to: "Settings")
             }
             .keyboardShortcut(",", modifiers: .command)
 
@@ -169,36 +166,21 @@ struct MenuBarView: View {
         }
     }
 
-    private func showMainWindow(reason: String) {
+    private func showMainWindow() {
         let existingWindow = WindowManager.shared.currentMainWindow()
-        logger.notice(
-            "🧭 Menu bar requested main window. reason=\(reason, privacy: .public); menuBarOnly=\(self.menuBarManager.isMenuBarOnly, privacy: .public); hasExistingMainWindow=\((existingWindow != nil), privacy: .public); activationPolicy=\(WindowDiagnostics.activationPolicyDescription(NSApplication.shared.activationPolicy()), privacy: .public); snapshot=\(WindowDiagnostics.windowSnapshot(), privacy: .public)"
-        )
-        menuBarManager.activateForPresentedWindow(reason: reason)
+        menuBarManager.activateForPresentedWindow()
 
         if existingWindow == nil {
             WindowManager.shared.prepareForUserRequestedMainWindow()
             openWindow(id: AppWindowID.main)
-            logger.notice(
-                "🧭 Menu bar requested SwiftUI to create/open main window. reason=\(reason, privacy: .public); path=createViaOpenWindow"
-            )
         } else {
             openWindow(id: AppWindowID.main)
             WindowManager.shared.showMainWindow()
-            logger.notice(
-                "🧭 Menu bar requested SwiftUI to open existing main window and asked WindowManager to present it. reason=\(reason, privacy: .public); path=existingWindow"
-            )
         }
     }
 
-    private func showMainWindowAndNavigate(to destination: String, reason: String) {
-        logger.notice(
-            "🧭 Menu bar navigation requested. reason=\(reason, privacy: .public); destination=\(destination, privacy: .public); selectedBefore=\(self.mainWindowNavigation.selectedView.rawValue, privacy: .public)"
-        )
+    private func showMainWindowAndNavigate(to destination: String) {
         mainWindowNavigation.navigate(to: destination)
-        logger.notice(
-            "🧭 Menu bar navigation state updated. reason=\(reason, privacy: .public); destination=\(destination, privacy: .public); selectedAfter=\(self.mainWindowNavigation.selectedView.rawValue, privacy: .public)"
-        )
-        showMainWindow(reason: reason)
+        showMainWindow()
     }
 }

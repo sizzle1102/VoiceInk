@@ -246,10 +246,10 @@ struct SettingsView: View {
                 .disabled(launchAtLoginManager.isUpdating)
 
                 Toggle(
-                    "Auto-check Updates",
+                    "Automatically Check for Updates",
                     isOn: Binding(
-                        get: { updaterViewModel.automaticallyChecksForUpdates },
-                        set: { updaterViewModel.setAutomaticallyChecksForUpdates($0) }
+                        get: { updaterViewModel.checksForUpdatesWhenDashboardAppears },
+                        set: { updaterViewModel.setChecksForUpdatesWhenDashboardAppears($0) }
                     ))
 
                 Toggle("Show Announcements", isOn: $enableAnnouncements)

@@ -2,7 +2,8 @@ import SwiftUI
 
 @MainActor
 final class OnboardingCoordinator: ObservableObject {
-    let licenseViewModel = LicenseViewModel()
+    let licenseViewModel = LicenseViewModel.shared
+    @Published var licenseKeyDraft = ""
 
     @Published var storedStage: String {
         didSet {
@@ -93,6 +94,12 @@ final class OnboardingCoordinator: ObservableObject {
     }
 
     var stage: OnboardingStage {
+        #if LOCAL_BUILD
+            if storedStage == OnboardingStage.license.rawValue {
+                return .trust
+            }
+        #endif
+
         if let stage = OnboardingStage(rawValue: storedStage) {
             return stage
         }
@@ -137,7 +144,11 @@ final class OnboardingCoordinator: ObservableObject {
     }
 
     var totalStepCount: Int {
-        OnboardingStage.baseStepCount + activeExperienceSteps.count + contextAwarenessStepCount + 2
+        #if LOCAL_BUILD
+            OnboardingStage.baseStepCount + activeExperienceSteps.count + contextAwarenessStepCount + 1
+        #else
+            OnboardingStage.baseStepCount + activeExperienceSteps.count + contextAwarenessStepCount + 2
+        #endif
     }
 
     var experienceStep: OnboardingExperienceStep {
@@ -172,8 +183,9 @@ final class OnboardingCoordinator: ObservableObject {
     }
 
     var shouldShowContextAwarenessAfterCurrentExperience: Bool {
+        guard experienceStep.showsContextAwarenessAfterCompletion else { return false }
         let nextIndex = normalizedExperienceStepIndex + 1
-        return experienceStep.showsContextAwarenessAfterCompletion && activeExperienceSteps.indices.contains(nextIndex)
+        return activeExperienceSteps.indices.contains(nextIndex) || isLastExperienceStep
     }
 
     var shouldShowContextAwarenessBeforeCurrentExperience: Bool {
@@ -315,14 +327,11 @@ final class OnboardingCoordinator: ObservableObject {
 
     private var contextAwarenessInsertionIndices: [Int] {
         activeExperienceSteps.indices.compactMap { index in
-            let nextIndex = index + 1
-            guard activeExperienceSteps[index].showsContextAwarenessAfterCompletion,
-                activeExperienceSteps.indices.contains(nextIndex)
-            else {
+            guard activeExperienceSteps[index].showsContextAwarenessAfterCompletion else {
                 return nil
             }
 
-            return nextIndex
+            return index + 1
         }
     }
 

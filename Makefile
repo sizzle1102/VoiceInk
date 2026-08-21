@@ -7,6 +7,7 @@ LOCAL_DERIVED_DATA := $(CURDIR)/.local-build
 # (MLXHuggingFaceMacros), and a non-interactive build has no way to grant either the
 # approval Xcode otherwise prompts for.
 XCODEBUILD_FLAGS := -skipPackagePluginValidation -skipMacroValidation
+LOCAL_CODESIGN_IDENTITY ?=
 
 .PHONY: all clean whisper setup build local install update-install install-weekly-updater uninstall-weekly-updater check healthcheck help dev run release release-setup test-companion test-companion-e2e companion-transcribe test-companion-xcode
 
@@ -48,16 +49,34 @@ setup: whisper
 build: setup
 	xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Debug $(XCODEBUILD_FLAGS) CODE_SIGN_IDENTITY="" build
 
-# Build for local use without Apple Developer certificate
+# Build locally with stable Apple Development signing when available.
 local: check setup
 	@echo "Building VoiceInk for local use (no Apple Developer certificate required)..."
 	@rm -rf "$(LOCAL_DERIVED_DATA)"
+	@SIGNING_IDENTITY="$(LOCAL_CODESIGN_IDENTITY)"; \
+	if [ -z "$$SIGNING_IDENTITY" ]; then \
+		SIGNING_IDENTITIES=$$(security find-identity -v -p codesigning 2>/dev/null | awk '/"Apple Development: / { print $$2 }'); \
+		SIGNING_IDENTITY_COUNT=$$(printf '%s\n' "$$SIGNING_IDENTITIES" | awk 'NF { count++ } END { print count + 0 }'); \
+		if [ "$$SIGNING_IDENTITY_COUNT" -eq 1 ]; then \
+			SIGNING_IDENTITY=$$(printf '%s\n' "$$SIGNING_IDENTITIES" | awk 'NF { print; exit }'); \
+		elif [ "$$SIGNING_IDENTITY_COUNT" -gt 1 ]; then \
+			echo "Multiple Apple Development identities found; set LOCAL_CODESIGN_IDENTITY to choose one; using ad-hoc signing"; \
+		fi; \
+	fi; \
+	if [ -n "$$SIGNING_IDENTITY" ] && [ "$$SIGNING_IDENTITY" != "-" ]; then \
+		SIGNING_REQUIRED=YES; \
+		echo "Using stable local signing identity: $$SIGNING_IDENTITY"; \
+	else \
+		SIGNING_IDENTITY="-"; \
+		SIGNING_REQUIRED=NO; \
+		echo "Using ad-hoc signing (permissions may need approval after rebuilds)"; \
+	fi; \
 	xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Debug \
 		$(XCODEBUILD_FLAGS) \
 		-derivedDataPath "$(LOCAL_DERIVED_DATA)" \
 		-xcconfig LocalBuild.xcconfig \
-		CODE_SIGN_IDENTITY="-" \
-		CODE_SIGNING_REQUIRED=NO \
+		CODE_SIGN_IDENTITY="$$SIGNING_IDENTITY" \
+		CODE_SIGNING_REQUIRED="$$SIGNING_REQUIRED" \
 		CODE_SIGNING_ALLOWED=YES \
 		DEVELOPMENT_TEAM="" \
 		CODE_SIGN_ENTITLEMENTS="$(CURDIR)/VoiceInk/VoiceInk.local.entitlements" \
@@ -164,7 +183,8 @@ help:
 	@echo "  whisper            Clone and build whisper.cpp XCFramework"
 	@echo "  setup              Copy whisper XCFramework to VoiceInk project"
 	@echo "  build              Build the VoiceInk Xcode project"
-	@echo "  local              Build for local use (no Apple Developer certificate needed)"
+	@echo "  local              Build locally with stable signing when available"
+	@echo "    LOCAL_CODESIGN_IDENTITY=<SHA or name> overrides automatic Apple Development detection"
 	@echo "  install            Install latest successful Actions artifact (or ZIP=/path)"
 	@echo "  update-install     Sync/merge upstream in Actions, build, sign, and install"
 	@echo "  install-weekly-updater    Install weekly local update/sign/install LaunchAgent"
