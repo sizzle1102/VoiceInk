@@ -13,9 +13,10 @@ struct TranscriptionRequestContext {
     }
 
     static var currentDefaults: TranscriptionRequestContext {
-        TranscriptionRequestContext(
-            language: UserDefaults.standard.string(forKey: "SelectedLanguage") ?? "auto",
-            prompt: UserDefaults.standard.string(forKey: "TranscriptionPrompt")
+        let language = UserDefaults.standard.string(forKey: "SelectedLanguage") ?? "auto"
+        return TranscriptionRequestContext(
+            language: language,
+            prompt: WhisperPrompt.resolvedPrompt(for: language)
         )
     }
 
