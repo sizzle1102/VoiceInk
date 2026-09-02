@@ -5,6 +5,25 @@ TEST_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TEST_WORKDIR="$(mktemp -d /private/tmp/voiceink-updater-cleanup.XXXXXX)"
 trap 'rm -rf "$TEST_WORKDIR"' EXIT
 
+rendered_make="$(
+  make -C "$TEST_ROOT" -n local LOCAL_CODESIGN_IDENTITY=-
+)"
+
+if [[ "$rendered_make" != *"-configuration Release"* ]]; then
+  echo 'make local must build the Release configuration' >&2
+  exit 1
+fi
+
+if [[ "$rendered_make" != *"-skipPackagePluginValidation"* ]]; then
+  echo 'make local must skip package plugin validation in non-interactive builds' >&2
+  exit 1
+fi
+
+if [[ "$rendered_make" != *"-skipMacroValidation"* ]]; then
+  echo 'make local must skip macro validation in non-interactive builds' >&2
+  exit 1
+fi
+
 # shellcheck disable=SC1090
 source "$TEST_ROOT/scripts/update-build-sign-install.sh"
 

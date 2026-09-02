@@ -8,6 +8,7 @@ LOCAL_DERIVED_DATA := $(CURDIR)/.local-build
 # approval Xcode otherwise prompts for.
 XCODEBUILD_FLAGS := -skipPackagePluginValidation -skipMacroValidation
 LOCAL_CODESIGN_IDENTITY ?=
+RUN_APP_NAME ?= VoiceInk
 
 .PHONY: all clean whisper setup build local install update-install install-weekly-updater uninstall-weekly-updater check healthcheck help dev run release release-setup
 
@@ -15,6 +16,7 @@ LOCAL_CODESIGN_IDENTITY ?=
 all: check build
 
 # Development workflow
+dev: RUN_APP_NAME = VoiceInk Dev
 dev: build run
 
 # Prerequisites
@@ -71,7 +73,7 @@ local: check setup
 		SIGNING_REQUIRED=NO; \
 		echo "Using ad-hoc signing (permissions may need approval after rebuilds)"; \
 	fi; \
-	xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Debug \
+	xcodebuild -project VoiceInk.xcodeproj -scheme VoiceInk -configuration Release \
 		$(XCODEBUILD_FLAGS) \
 		-derivedDataPath "$(LOCAL_DERIVED_DATA)" \
 		-xcconfig LocalBuild.xcconfig \
@@ -82,7 +84,7 @@ local: check setup
 		CODE_SIGN_ENTITLEMENTS="$(CURDIR)/VoiceInk/VoiceInk.local.entitlements" \
 		SWIFT_ACTIVE_COMPILATION_CONDITIONS='$$(inherited) LOCAL_BUILD' \
 		build
-	@APP_PATH="$(LOCAL_DERIVED_DATA)/Build/Products/Debug/VoiceInk.app" && \
+	@APP_PATH="$(LOCAL_DERIVED_DATA)/Build/Products/Release/VoiceInk.app" && \
 	if [ -d "$$APP_PATH" ]; then \
 		echo "Copying VoiceInk.app to ~/Downloads..."; \
 		rm -rf "$$HOME/Downloads/VoiceInk.app"; \
@@ -102,17 +104,17 @@ local: check setup
 
 # Run application
 run:
-	@if [ -d "$$HOME/Downloads/VoiceInk.app" ]; then \
-		echo "Opening ~/Downloads/VoiceInk.app..."; \
-		open "$$HOME/Downloads/VoiceInk.app"; \
+	@if [ -d "$$HOME/Downloads/$(RUN_APP_NAME).app" ]; then \
+		echo "Opening ~/Downloads/$(RUN_APP_NAME).app..."; \
+		open "$$HOME/Downloads/$(RUN_APP_NAME).app"; \
 	else \
-		echo "Looking for VoiceInk.app in DerivedData..."; \
-		APP_PATH=$$(find "$$HOME/Library/Developer/Xcode/DerivedData" -name "VoiceInk.app" -type d | head -1) && \
+		echo "Looking for $(RUN_APP_NAME).app in DerivedData..."; \
+		APP_PATH=$$(find "$$HOME/Library/Developer/Xcode/DerivedData" -name "$(RUN_APP_NAME).app" -type d | head -1) && \
 		if [ -n "$$APP_PATH" ]; then \
 			echo "Found app at: $$APP_PATH"; \
 			open "$$APP_PATH"; \
 		else \
-			echo "VoiceInk.app not found. Please run 'make build' or 'make local' first."; \
+			echo "$(RUN_APP_NAME).app not found. Build it with 'make local' or use 'make dev' for the development app."; \
 			exit 1; \
 		fi; \
 	fi
