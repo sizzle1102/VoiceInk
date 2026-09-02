@@ -9,7 +9,7 @@ LOCAL_DERIVED_DATA := $(CURDIR)/.local-build
 XCODEBUILD_FLAGS := -skipPackagePluginValidation -skipMacroValidation
 LOCAL_CODESIGN_IDENTITY ?=
 
-.PHONY: all clean whisper setup build local install update-install install-weekly-updater uninstall-weekly-updater check healthcheck help dev run release release-setup test-companion test-companion-e2e companion-transcribe test-companion-xcode
+.PHONY: all clean whisper setup build local install update-install install-weekly-updater uninstall-weekly-updater check healthcheck help dev run release release-setup
 
 # Default target
 all: check build
@@ -100,31 +100,6 @@ local: check setup
 		exit 1; \
 	fi
 
-test-companion:
-	bash tests/inbox-companion-cli-test.sh
-
-test-companion-e2e:
-	bash tests/inbox-companion-e2e.sh
-
-companion-transcribe:
-	@test -n "$(INPUT)" || { echo "Usage: make companion-transcribe INPUT=/path/to/audio" >&2; exit 2; }
-	Companion/voiceink-inbox-transcribe "$(INPUT)"
-
-test-companion-xcode:
-	xcodebuild test -project VoiceInk.xcodeproj -scheme VoiceInk \
-		$(XCODEBUILD_FLAGS) \
-		-destination 'platform=macOS' \
-		-derivedDataPath "$(CURDIR)/.local-build-tests" \
-		-xcconfig LocalBuild.xcconfig \
-		CODE_SIGN_IDENTITY="-" \
-		CODE_SIGNING_REQUIRED=NO \
-		CODE_SIGNING_ALLOWED=YES \
-		DEVELOPMENT_TEAM="" \
-		CODE_SIGN_ENTITLEMENTS="$(CURDIR)/VoiceInk/VoiceInk.local.entitlements" \
-		SWIFT_ACTIVE_COMPILATION_CONDITIONS='$$(inherited) LOCAL_BUILD' \
-		ENABLE_TESTABILITY=YES \
-		-only-testing:VoiceInkTests
-
 # Run application
 run:
 	@if [ -d "$$HOME/Downloads/VoiceInk.app" ]; then \
@@ -189,9 +164,6 @@ help:
 	@echo "  update-install     Sync/merge upstream in Actions, build, sign, and install"
 	@echo "  install-weekly-updater    Install weekly local update/sign/install LaunchAgent"
 	@echo "  uninstall-weekly-updater  Remove weekly local update/sign/install LaunchAgent"
-	@echo "  test-companion     Run inbox companion Bash contract tests"
-	@echo "  test-companion-xcode  Run inbox companion Swift unit tests"
-	@echo "  test-companion-e2e    Run inbox companion installed-app end-to-end check"
 	@echo "  run                Launch the built VoiceInk app"
 	@echo "  dev                Build and run the app (for development)"
 	@echo "  release            Build DMG and Appcast using release-notes/<version>.html"

@@ -29,7 +29,7 @@ actor WhisperContext {
         }
     }
 
-    func fullTranscribe(samples: [Float], cancellation: TranscriptionCancellationToken? = nil) throws -> Bool {
+    func fullTranscribe(samples: [Float]) -> Bool {
         guard let context = context else { return false }
 
         let maxThreads = max(1, min(8, cpuCount() - 2))
@@ -67,18 +67,6 @@ actor WhisperContext {
         params.single_segment = false
         params.temperature = 0.2
 
-        // ggml polls this before each computation and aborts as soon as it returns true.
-        // The callback must not capture, so the token travels through the user-data pointer.
-        if let cancellation {
-            params.abort_callback = { userData in
-                guard let userData else { return false }
-                return Unmanaged<TranscriptionCancellationToken>.fromOpaque(userData)
-                    .takeUnretainedValue()
-                    .isCancelled
-            }
-            params.abort_callback_user_data = Unmanaged.passUnretained(cancellation).toOpaque()
-        }
-
         whisper_reset_timings(context)
 
         // Configure VAD if enabled by user and model is available
@@ -100,22 +88,15 @@ actor WhisperContext {
         }
 
         var success = true
-        withExtendedLifetime(cancellation) {
-            samples.withUnsafeBufferPointer { samplesBuffer in
-                if whisper_full(context, params, samplesBuffer.baseAddress, Int32(samplesBuffer.count)) != 0 {
-                    logger.error("❌ Failed to run whisper_full. VAD enabled: \(params.vad, privacy: .public)")
-                    success = false
-                }
+        samples.withUnsafeBufferPointer { samplesBuffer in
+            if whisper_full(context, params, samplesBuffer.baseAddress, Int32(samplesBuffer.count)) != 0 {
+                logger.error("❌ Failed to run whisper_full. VAD enabled: \(params.vad, privacy: .public)")
+                success = false
             }
         }
 
         languageCString = nil
         promptCString = nil
-
-        // An aborted run is a cancellation, not a core engine fault.
-        if !success, cancellation?.isCancelled == true {
-            throw CancellationError()
-        }
 
         return success
     }

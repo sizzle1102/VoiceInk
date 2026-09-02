@@ -163,23 +163,6 @@ struct VoiceInkApp: App {
         _prewarmService = StateObject(wrappedValue: prewarmService)
 
         appDelegate.menuBarManager = menuBarManager
-        let inboxCompanionRunner = InboxTranscriptionRunner(
-            backend: RegistryInboxTranscriptionBackend(engine: engine),
-            modelContext: resolvedContainer.mainContext
-        )
-        appDelegate.configureInboxCompanionBridge(
-            InboxCompanionBridge(
-                runner: inboxCompanionRunner,
-                snapshotResolver: { request, promptData in
-                    try InboxCompanionPreflight.resolve(
-                        request: request,
-                        modes: ModeManager.shared.configurations,
-                        transcriptionModelManager: transcriptionModelManager,
-                        promptData: promptData
-                    )
-                }
-            )
-        )
 
         // Ensure no lingering recording state from previous runs
         Task {

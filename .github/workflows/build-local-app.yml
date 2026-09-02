@@ -9,16 +9,6 @@ on:
         description: Unique id used by local automation to find this run
         required: false
         type: string
-      run_companion_tests:
-        description: Run inbox companion Bash and Xcode tests
-        required: false
-        default: false
-        type: boolean
-      run_companion_e2e:
-        description: Run installed-app inbox companion E2E
-        required: false
-        default: false
-        type: boolean
 
 permissions:
   contents: read
@@ -37,35 +27,8 @@ jobs:
           xcodebuild -version
           xcode-select -p
 
-      - name: Test inbox companion Bash contract
-        if: ${{ inputs.run_companion_tests }}
-        run: make test-companion
-
-      - name: Build whisper for inbox companion tests
-        if: ${{ inputs.run_companion_tests }}
-        run: make whisper
-
-      - name: Test inbox companion Xcode contract
-        if: ${{ inputs.run_companion_tests }}
-        run: make test-companion-xcode
-
-      # Only the test bundle is ever uploaded; request directories, prompts, audio,
-      # transcripts, defaults and Keychain data must never leave the runner.
-      - name: Upload companion test results on failure
-        if: ${{ failure() && inputs.run_companion_tests }}
-        uses: actions/upload-artifact@v6
-        with:
-          name: companion-xcresult
-          path: .local-build-tests/Logs/Test/*.xcresult
-          retention-days: 1
-          if-no-files-found: ignore
-
       - name: Build local app
         run: make local
-
-      - name: Run installed-app inbox companion E2E
-        if: ${{ inputs.run_companion_e2e }}
-        run: bash tests/inbox-companion-e2e.sh
 
       - name: Package app
         run: |

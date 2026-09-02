@@ -2,7 +2,6 @@ import Cocoa
 import SwiftUI
 import UniformTypeIdentifiers
 
-@MainActor
 class AppDelegate: NSObject, NSApplicationDelegate {
     weak var menuBarManager: MenuBarManager?
 
@@ -31,31 +30,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // Stash URL when app cold-starts to avoid spawning a new window/tab
     var pendingOpenFileURL: URL?
-    private var inboxCompanionBridge: InboxCompanionBridge?
-    private var pendingInboxCompanionURLs: [URL] = []
-
-    func configureInboxCompanionBridge(_ bridge: InboxCompanionBridge) {
-        inboxCompanionBridge = bridge
-        let pendingURLs = pendingInboxCompanionURLs
-        pendingInboxCompanionURLs.removeAll()
-        pendingURLs.forEach(bridge.handle)
-    }
 
     func application(_ application: NSApplication, open urls: [URL]) {
-        let partition = Self.partitionOpenURLs(urls)
-        let companionURLs = partition.companion
-        if !companionURLs.isEmpty {
-            if let inboxCompanionBridge {
-                companionURLs.forEach(inboxCompanionBridge.handle)
-            } else {
-                pendingInboxCompanionURLs.append(contentsOf: companionURLs)
-            }
-        }
-
-        let remainingURLs = partition.remaining
-        guard !remainingURLs.isEmpty else { return }
-
-        guard let url = remainingURLs.first(where: { SupportedMedia.isSupported(url: $0) }) else {
+        guard let url = urls.first(where: { SupportedMedia.isSupported(url: $0) }) else {
             return
         }
 
@@ -78,16 +55,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 name: .navigateToDestination, object: nil, userInfo: ["destination": "Transcribe Audio"])
             DispatchQueue.main.async {
                 NotificationCenter.default.post(name: .openFileForTranscription, object: nil, userInfo: ["url": url])
-            }
-        }
-    }
-
-    static func partitionOpenURLs(_ urls: [URL]) -> (companion: [URL], remaining: [URL]) {
-        urls.reduce(into: (companion: [URL](), remaining: [URL]())) { result, url in
-            if InboxCompanionBridge.isCompanionURL(url) {
-                result.companion.append(url)
-            } else {
-                result.remaining.append(url)
             }
         }
     }
