@@ -6,7 +6,7 @@ LOCAL_DERIVED_DATA := $(CURDIR)/.local-build
 LOCAL_CODESIGN_IDENTITY ?=
 RUN_APP_NAME ?= VoiceInk
 
-.PHONY: all clean whisper setup build local check healthcheck help dev run release release-setup
+.PHONY: all clean whisper setup build local install update-install install-weekly-updater uninstall-weekly-updater check healthcheck help dev run release release-setup
 
 # Default target
 all: check build
@@ -119,6 +119,22 @@ run:
 		fi; \
 	fi
 
+update-install:
+	scripts/update-build-sign-install.sh
+
+install:
+	@if [ -n "$(ZIP)" ]; then \
+		scripts/install-app.sh "$(ZIP)"; \
+	else \
+		scripts/install-app.sh; \
+	fi
+
+install-weekly-updater:
+	scripts/install-weekly-updater-launchagent.sh install
+
+uninstall-weekly-updater:
+	scripts/install-weekly-updater-launchagent.sh uninstall
+
 # Build a signed, notarized DMG and matching local Sparkle Appcast.
 release: whisper
 	@if [ -n "$(NOTES)" ]; then \
@@ -146,6 +162,10 @@ help:
 	@echo "  build              Build the VoiceInk Xcode project"
 	@echo "  local              Build locally with stable signing when available"
 	@echo "    LOCAL_CODESIGN_IDENTITY=<SHA or name> overrides automatic Apple Development detection"
+	@echo "  install            Install latest successful Actions artifact (or ZIP=/path)"
+	@echo "  update-install     Sync/merge upstream in Actions, build, sign, and install"
+	@echo "  install-weekly-updater    Install weekly local update/sign/install LaunchAgent"
+	@echo "  uninstall-weekly-updater  Remove weekly local update/sign/install LaunchAgent"
 	@echo "  run                Launch the built VoiceInk app"
 	@echo "  dev                Build and run the app (for development)"
 	@echo "  release            Build DMG and Appcast using release-notes/<version>.html"

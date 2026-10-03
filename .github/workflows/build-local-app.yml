@@ -1,0 +1,45 @@
+name: Build local VoiceInk app
+
+run-name: Build local VoiceInk app ${{ inputs.request_id || github.run_number }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      request_id:
+        description: Unique id used by local automation to find this run
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build VoiceInk.app
+    runs-on: macos-26
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Show Xcode version
+        run: |
+          xcodebuild -version
+          xcode-select -p
+
+      - name: Build local app
+        run: make local
+
+      - name: Package app
+        run: |
+          test -d "$HOME/Downloads/VoiceInk.app"
+          ditto -c -k --sequesterRsrc --keepParent \
+            "$HOME/Downloads/VoiceInk.app" \
+            "$RUNNER_TEMP/VoiceInk.app.zip"
+
+      - name: Upload app artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: VoiceInk-app
+          path: ${{ runner.temp }}/VoiceInk.app.zip
+          retention-days: 1
