@@ -163,7 +163,7 @@ help:
 	@echo "  local              Build locally with stable signing when available"
 	@echo "    LOCAL_CODESIGN_IDENTITY=<SHA or name> overrides automatic Apple Development detection"
 	@echo "  install            Install latest successful Actions artifact (or ZIP=/path)"
-	@echo "  update-install     Sync/merge upstream in Actions, build, sign, and install"
+	@echo "  update-install     Rebase fork onto upstream in Actions, build, sign, and install"
 	@echo "  install-weekly-updater    Install weekly local update/sign/install LaunchAgent"
 	@echo "  uninstall-weekly-updater  Remove weekly local update/sign/install LaunchAgent"
 	@echo "  run                Launch the built VoiceInk app"
