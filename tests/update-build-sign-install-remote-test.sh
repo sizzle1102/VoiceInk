@@ -48,7 +48,7 @@ run_success_case() (
   }
   voiceink_remote_branch_sha() {
     printf 'remote-sha:%s\n' "$2" >> "$SUCCESS_CALLS"
-    printf '%s' 'merged-main-sha'
+    printf '%s' 'rebased-fork-sha'
   }
   voiceink_download_run_artifact_zip() {
     printf 'download:%s\n' "$2" >> "$SUCCESS_CALLS"
@@ -94,7 +94,7 @@ run_success_case() (
   }
 
   export VOICEINK_ARTIFACT_CACHE="$TEST_WORKDIR/success-cache/VoiceInk-app.zip"
-  main --no-relaunch
+  main --no-relaunch "$@"
 )
 
 run_failure_case() (
@@ -172,16 +172,16 @@ success_sequence="$(
 )"
 
 printf '%s\n' "$success_sequence" |
-  rg '^dispatch:sync-upstream\.yml:main:sync-request:.*auto_merge.*true' \
+  rg '^dispatch:sync-upstream\.yml:fork:sync-request:\{\}' \
     >/dev/null
 printf '%s\n' "$success_sequence" |
   rg '^wait:sync-upstream\.yml:sync-request:$' >/dev/null
 printf '%s\n' "$success_sequence" |
-  rg '^remote-sha:main$' >/dev/null
+  rg '^remote-sha:fork$' >/dev/null
 printf '%s\n' "$success_sequence" |
-  rg '^dispatch:build-local-app\.yml:main:build-request:' >/dev/null
+  rg '^dispatch:build-local-app\.yml:fork:build-request:' >/dev/null
 printf '%s\n' "$success_sequence" |
-  rg '^wait:build-local-app\.yml:build-request:merged-main-sha$' >/dev/null
+  rg '^wait:build-local-app\.yml:build-request:rebased-fork-sha$' >/dev/null
 
 expected_tail="$(cat <<'EOF'
 download:build-run-2
@@ -209,5 +209,22 @@ if rg -q '^(remote-sha|download|sign|install)$' "$FAILURE_CALLS"; then
   echo 'sync failure allowed later update stages to run' >&2
   exit 1
 fi
+
+# Sync always updates fork; building another branch requires an explicit skip.
+if BRANCH=main SUCCESS_CALLS="$TEST_WORKDIR/wrong-branch.log" run_success_case; then
+  echo 'expected upstream sync on a non-fork build branch to be rejected' >&2
+  exit 1
+fi
+[[ ! -s "$TEST_WORKDIR/wrong-branch.log" ]] || {
+  echo 'wrong-branch request dispatched remote work' >&2
+  exit 1
+}
+BRANCH=codex/feature SUCCESS_CALLS="$TEST_WORKDIR/feature.log" run_success_case --skip-sync
+if rg -q '^dispatch:sync-upstream' "$TEST_WORKDIR/feature.log"; then
+  echo 'skip-sync unexpectedly dispatched upstream sync' >&2
+  exit 1
+fi
+rg '^remote-sha:codex/feature$' "$TEST_WORKDIR/feature.log" >/dev/null
+rg '^dispatch:build-local-app\.yml:codex/feature:' "$TEST_WORKDIR/feature.log" >/dev/null
 
 echo 'update-build-sign-install remote orchestration test passed'
