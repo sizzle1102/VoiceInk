@@ -8,7 +8,7 @@ source "$SCRIPT_DIR/lib/voiceink-install-common.sh"
 
 SCRIPT_NAME="$(basename "$0")"
 REMOTE="${VOICEINK_REMOTE:-origin}"
-BRANCH="${VOICEINK_BRANCH:-main}"
+BRANCH="${VOICEINK_BRANCH:-fork}"
 SYNC_WORKFLOW="${VOICEINK_SYNC_WORKFLOW:-sync-upstream.yml}"
 BUILD_WORKFLOW="${VOICEINK_WORKFLOW:-build-local-app.yml}"
 ARTIFACT_NAME="${VOICEINK_ARTIFACT_NAME:-VoiceInk-app}"
@@ -29,8 +29,8 @@ usage() {
   cat <<EOF
 Usage: $SCRIPT_NAME [options]
 
-Synchronizes this fork through GitHub Actions, automatically merges the sync
-pull request, builds the resulting $BRANCH, downloads that exact artifact,
+Synchronizes the upstream mirror and rebases fork through GitHub Actions,
+builds the resulting $BRANCH, downloads that exact artifact,
 signs it with a local certificate, and installs it.
 
 Options:
@@ -49,7 +49,7 @@ Environment:
       Local code signing identity. Default: VoiceInk Local Code Signing
 
   VOICEINK_BRANCH
-      Remote fork branch to synchronize and build. Default: main
+      Remote app branch to build. Default: fork; use --skip-sync for other branches.
 EOF
 }
 
@@ -112,7 +112,7 @@ run_remote_update() {
   local sync_request_id
   local build_request_id
   local sync_run_id=""
-  local main_sha
+  local fork_sha
   local build_run_id
   local app_path
 
@@ -121,14 +121,18 @@ run_remote_update() {
   build_request_id="build-install-$timestamp"
 
   if [[ "$SKIP_SYNC" != "1" ]]; then
+    [[ "$BRANCH" == "fork" ]] || {
+      voiceink_die "Upstream sync updates fork; use --skip-sync to build $BRANCH"
+      return 1
+    }
     voiceink_log "Dispatching upstream sync: $sync_request_id"
     voiceink_dispatch_workflow \
       "$repo" \
       "$SYNC_WORKFLOW" \
       "$BRANCH" \
       "$sync_request_id" \
-      '{"auto_merge":true}' \
-      "$workdir/sync-dispatch.json"
+      '{}' \
+      "$workdir/sync-dispatch.json" || return 1
     sync_run_id="$(
       voiceink_wait_for_workflow_run \
         "$repo" \
@@ -143,27 +147,27 @@ run_remote_update() {
     voiceink_log "Skipping upstream sync"
   fi
 
-  main_sha="$(
+  fork_sha="$(
     voiceink_remote_branch_sha "$repo" "$BRANCH" "$workdir"
   )" || return 1
-  [[ -n "$main_sha" ]] ||
+  [[ -n "$fork_sha" ]] ||
     voiceink_die "Remote $BRANCH has no head SHA" || return 1
 
-  voiceink_log "Dispatching build for $BRANCH at $main_sha"
+  voiceink_log "Dispatching build for $BRANCH at $fork_sha"
   voiceink_dispatch_workflow \
     "$repo" \
     "$BUILD_WORKFLOW" \
     "$BRANCH" \
     "$build_request_id" \
     '{}' \
-    "$workdir/build-dispatch.json"
+    "$workdir/build-dispatch.json" || return 1
   build_run_id="$(
     voiceink_wait_for_workflow_run \
       "$repo" \
       "$BUILD_WORKFLOW" \
       "$BRANCH" \
       "$build_request_id" \
-      "$main_sha" \
+      "$fork_sha" \
       "$workdir/build"
   )" || return 1
 
@@ -173,7 +177,7 @@ run_remote_update() {
     "$build_run_id" \
     "$ARTIFACT_NAME" \
     "$artifact_cache" \
-    "$workdir/download"
+    "$workdir/download" || return 1
 
   app_path="$(
     voiceink_extract_artifact_zip \
@@ -181,7 +185,7 @@ run_remote_update() {
       "$workdir/staging" \
       "$BUNDLE_ID"
   )" || return 1
-  sign_app "$app_path"
+  sign_app "$app_path" || return 1
 
   if [[ "$SKIP_INSTALL" == "1" ]]; then
     KEEP_WORKDIR=1
@@ -250,7 +254,7 @@ main() {
     if [[ "$SKIP_SYNC" == "1" ]]; then
       voiceink_log "Dry run: build remote $BRANCH without sync"
     else
-      voiceink_log "Dry run: sync and auto-merge upstream into remote $BRANCH"
+      voiceink_log "Dry run: fast-forward main and rebase remote fork onto upstream"
     fi
     voiceink_log "Dry run: build, download, sign, and install"
     return 0

@@ -7,7 +7,7 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/voiceink-install-common.sh"
 
 REMOTE="${VOICEINK_REMOTE:-origin}"
-BRANCH="${VOICEINK_BRANCH:-main}"
+BRANCH="${VOICEINK_BRANCH:-fork}"
 WORKFLOW_FILE="${VOICEINK_WORKFLOW:-build-local-app.yml}"
 ARTIFACT_NAME="${VOICEINK_ARTIFACT_NAME:-VoiceInk-app}"
 ARTIFACT_CACHE="${VOICEINK_ARTIFACT_CACHE:-$REPO_ROOT/artifacts/VoiceInk-app.zip}"
@@ -37,8 +37,8 @@ install_archive() {
 
   app_path="$(
     voiceink_extract_artifact_zip "$archive_path" "$workdir" "$BUNDLE_ID"
-  )"
-  voiceink_sign_app "$app_path" "$SIGN_IDENTITY"
+  )" || return 1
+  voiceink_sign_app "$app_path" "$SIGN_IDENTITY" || return 1
   voiceink_install_app \
     "$app_path" \
     "$APP_DESTINATION" \
@@ -78,7 +78,7 @@ install_latest_archive() {
 
   IFS=$'\t' read -r run_id head_sha download_url <<< "$latest_result"
   voiceink_log "Using successful run $run_id at $head_sha"
-  voiceink_download_artifact_zip "$download_url" "$ARTIFACT_CACHE"
+  voiceink_download_artifact_zip "$download_url" "$ARTIFACT_CACHE" || return 1
   install_archive "$ARTIFACT_CACHE" "$workdir"
 }
 
