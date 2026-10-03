@@ -197,12 +197,12 @@ voiceink_wait_for_workflow_run() {
   local conclusion=""
   local html_url=""
 
-  mkdir -p "$workdir"
+  mkdir -p "$workdir" || return 1
   voiceink_log "Waiting for $workflow run $request_id"
   while [[ $(date +%s) -lt $deadline ]]; do
     voiceink_github_api GET \
       "https://api.github.com/repos/$repo/actions/workflows/$workflow/runs?branch=$branch&event=workflow_dispatch&per_page=30" \
-      "$runs_file"
+      "$runs_file" || return 1
 
     run_json="$(voiceink_find_workflow_run "$runs_file" "$request_id")"
     if [[ -n "$run_json" ]]; then
@@ -227,7 +227,7 @@ voiceink_wait_for_workflow_run() {
   while [[ $(date +%s) -lt $deadline ]]; do
     voiceink_github_api GET \
       "https://api.github.com/repos/$repo/actions/runs/$run_id" \
-      "$run_file"
+      "$run_file" || return 1
     run_json="$(cat "$run_file")"
     status="$(voiceink_json_field "$run_json" status)"
     conclusion="$(voiceink_json_field "$run_json" conclusion)"
@@ -254,10 +254,10 @@ voiceink_remote_branch_sha() {
   local workdir="$3"
   local ref_file="$workdir/ref-${branch//\//-}.json"
 
-  mkdir -p "$workdir"
+  mkdir -p "$workdir" || return 1
   voiceink_github_api GET \
     "https://api.github.com/repos/$repo/git/ref/heads/$branch" \
-    "$ref_file"
+    "$ref_file" || return 1
   python3 - "$ref_file" <<'PY'
 import json
 import sys
@@ -319,17 +319,17 @@ voiceink_find_latest_available_artifact() {
   local head_sha=""
   local download_url=""
 
-  mkdir -p "$workdir"
+  mkdir -p "$workdir" || return 1
   voiceink_github_api GET \
     "https://api.github.com/repos/$repo/actions/workflows/$workflow/runs?branch=$branch&status=success&per_page=30" \
-    "$runs_file"
+    "$runs_file" || return 1
 
   while IFS=$'\t' read -r run_id head_sha; do
     [[ -n "$run_id" ]] || continue
     artifacts_file="$workdir/artifacts-$run_id.json"
     voiceink_github_api GET \
       "https://api.github.com/repos/$repo/actions/runs/$run_id/artifacts" \
-      "$artifacts_file"
+      "$artifacts_file" || return 1
     download_url="$(
       voiceink_artifact_download_url "$artifacts_file" "$artifact_name"
     )"
@@ -363,7 +363,7 @@ voiceink_download_artifact_zip() {
 
   destination_dir="$(dirname "$destination")"
   temporary_path="$destination.download.$$"
-  mkdir -p "$destination_dir"
+  mkdir -p "$destination_dir" || return 1
   rm -f -- "$temporary_path"
 
   if ! voiceink_github_download "$download_url" "$temporary_path"; then
@@ -384,10 +384,10 @@ voiceink_download_run_artifact_zip() {
   local artifacts_file="$workdir/run-$run_id-artifacts.json"
   local download_url
 
-  mkdir -p "$workdir"
+  mkdir -p "$workdir" || return 1
   voiceink_github_api GET \
     "https://api.github.com/repos/$repo/actions/runs/$run_id/artifacts" \
-    "$artifacts_file"
+    "$artifacts_file" || return 1
   download_url="$(
     voiceink_artifact_download_url "$artifacts_file" "$artifact_name"
   )"
@@ -412,8 +412,8 @@ voiceink_extract_artifact_zip() {
   [[ -f "$archive_path" ]] ||
     voiceink_die "Artifact ZIP not found: $archive_path" || return 1
 
-  mkdir -p "$artifact_dir" "$app_dir"
-  unzip -q "$archive_path" -d "$artifact_dir"
+  mkdir -p "$artifact_dir" "$app_dir" || return 1
+  unzip -q "$archive_path" -d "$artifact_dir" || return 1
 
   while IFS= read -r candidate; do
     app_zips+=("$candidate")
@@ -424,7 +424,7 @@ voiceink_extract_artifact_zip() {
     return 1
 
   app_zip="${app_zips[0]}"
-  unzip -q "$app_zip" -d "$app_dir"
+  unzip -q "$app_zip" -d "$app_dir" || return 1
 
   [[ -d "$app_path" ]] ||
     voiceink_die "Downloaded app not found at $app_path" || return 1
@@ -434,7 +434,7 @@ voiceink_extract_artifact_zip() {
   actual_bundle_id="$(
     plutil -extract CFBundleIdentifier raw -o - \
       "$app_path/Contents/Info.plist"
-  )"
+  )" || return 1
   [[ "$actual_bundle_id" == "$bundle_id" ]] ||
     voiceink_die "Unexpected bundle identifier: $actual_bundle_id" || return 1
 
@@ -446,9 +446,9 @@ voiceink_sign_app() {
   local sign_identity="$2"
 
   voiceink_log "Signing app with identity: $sign_identity"
-  xattr -cr "$app_path"
-  codesign --force --deep --sign "$sign_identity" "$app_path"
-  codesign --verify --deep --strict --verbose=2 "$app_path"
+  xattr -cr "$app_path" || return 1
+  codesign --force --deep --sign "$sign_identity" "$app_path" || return 1
+  codesign --verify --deep --strict --verbose=2 "$app_path" || return 1
 }
 
 voiceink_quit_existing_app() {
@@ -504,7 +504,7 @@ voiceink_install_app() {
       backup_path="$backup_base.$backup_counter"
     done
     voiceink_log "Moving current app to $backup_path"
-    mv "$destination" "$backup_path"
+    mv "$destination" "$backup_path" || return 1
   fi
 
   voiceink_log "Installing signed app to $destination"
